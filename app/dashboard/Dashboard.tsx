@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from "react";
 
+type ProcoreProject = { id: string; name: string; number: string | null; companyId: string; companyName: string };
+type ProcoreDrawing = { id: string; number: string; title: string; revision: string | null; date: string | null; discipline: string | null; size: number | null };
+
 const projects = [
   { name: "Riverstone Medical Center", code: "RMC-024", location: "Denver, CO", progress: 68, value: "$12.4M", status: "On track", color: "blue" },
   { name: "Canyon Ridge Apartments", code: "CRA-017", location: "Aurora, CO", progress: 42, value: "$8.7M", status: "At risk", color: "amber" },
@@ -34,6 +37,16 @@ export default function Dashboard() {
     name?: string | null;
     login?: string;
   }>({ loading: true, connected: false });
+  const [planProjects, setPlanProjects] = useState<ProcoreProject[]>([]);
+  const [selectedProject, setSelectedProject] = useState("");
+  const [drawings, setDrawings] = useState<ProcoreDrawing[]>([]);
+  const [selectedDrawings, setSelectedDrawings] = useState<string[]>([]);
+  const [drawingSearch, setDrawingSearch] = useState("");
+  const [planQuestion, setPlanQuestion] = useState("");
+  const [planAnswer, setPlanAnswer] = useState("");
+  const [planError, setPlanError] = useState("");
+  const [planBusy, setPlanBusy] = useState(false);
+  const [drawingBusy, setDrawingBusy] = useState(false);
 
   useEffect(() => {
     const result = new URLSearchParams(window.location.search).get("procore");
@@ -42,12 +55,10 @@ export default function Dashboard() {
 
     fetch("/api/procore/status")
       .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((data) => setProcore({
-        loading: false,
-        connected: data.connected,
-        name: data.connection?.procoreName,
-        login: data.connection?.procoreLogin,
-      }))
+      .then((data) => {
+        setProcore({ loading: false, connected: data.connected, name: data.connection?.procoreName, login: data.connection?.procoreLogin });
+        if (data.connected) loadPlanProjects();
+      })
       .catch(() => setProcore({ loading: false, connected: false }));
   }, []);
 
@@ -55,6 +66,59 @@ export default function Dashboard() {
     setToast(message);
     window.setTimeout(() => setToast(""), 2600);
   }
+
+  async function loadPlanProjects() {
+    setPlanError("");
+    try {
+      const response = await fetch("/api/procore/projects");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not load projects.");
+      setPlanProjects(data.projects);
+    } catch (error) {
+      setPlanError(error instanceof Error ? error.message : "Could not load projects.");
+    }
+  }
+
+  async function chooseProject(value: string) {
+    setSelectedProject(value); setDrawings([]); setSelectedDrawings([]); setPlanAnswer(""); setPlanError("");
+    if (!value) return;
+    const project = planProjects.find((item) => `${item.companyId}:${item.id}` === value);
+    if (!project) return;
+    setDrawingBusy(true);
+    try {
+      const response = await fetch(`/api/procore/drawings?projectId=${encodeURIComponent(project.id)}&companyId=${encodeURIComponent(project.companyId)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not load drawings.");
+      setDrawings(data.drawings);
+    } catch (error) {
+      setPlanError(error instanceof Error ? error.message : "Could not load drawings.");
+    } finally { setDrawingBusy(false); }
+  }
+
+  function toggleDrawing(id: string) {
+    setPlanError("");
+    setSelectedDrawings((current) => {
+      if (current.includes(id)) return current.filter((item) => item !== id);
+      if (current.length >= 4) { setPlanError("Choose up to four sheets per question."); return current; }
+      return [...current, id];
+    });
+  }
+
+  async function askPlans(event: React.FormEvent) {
+    event.preventDefault();
+    const project = planProjects.find((item) => `${item.companyId}:${item.id}` === selectedProject);
+    if (!project || !selectedDrawings.length || !planQuestion.trim()) { setPlanError("Choose a project, select at least one sheet, and enter a question."); return; }
+    setPlanBusy(true); setPlanError(""); setPlanAnswer("");
+    try {
+      const response = await fetch("/api/plans/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: planQuestion, projectId: project.id, companyId: project.companyId, drawingIds: selectedDrawings }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not answer the question.");
+      setPlanAnswer(data.answer);
+    } catch (error) { setPlanError(error instanceof Error ? error.message : "Could not answer the question."); }
+    finally { setPlanBusy(false); }
+  }
+
+  const visibleDrawings = drawings.filter((drawing) => `${drawing.number} ${drawing.title} ${drawing.discipline ?? ""}`.toLowerCase().includes(drawingSearch.toLowerCase()));
 
   return (
     <div className="app-shell">
@@ -118,6 +182,36 @@ export default function Dashboard() {
               }}>Disconnect</button>
             ) : (
               <a className={`procore-connect ${procore.loading ? "disabled" : ""}`} href={procore.loading ? undefined : "/api/procore/connect"}>Connect Procore <span>→</span></a>
+            )}
+          </section>
+
+          <section className="plans-assistant" id="drawings" aria-labelledby="plans-title">
+            <div className="plans-heading">
+              <div><p>PROCORE DRAWING INTELLIGENCE</p><h2 id="plans-title">Ask the plans</h2><span>Select current drawing sheets and ask a field question. Every answer stays grounded in those sheets.</span></div>
+              <div className="plans-badge"><i /> {procore.connected ? "Live Procore access" : "Connect Procore to begin"}</div>
+            </div>
+            {!procore.connected && !procore.loading ? <div className="plans-empty"><strong>Your drawings are one connection away.</strong><span>Connect Procore above, then choose a project and its current plan sheets.</span></div> : (
+              <div className="plans-grid">
+                <div className="plans-source">
+                  <label htmlFor="plan-project">Project</label>
+                  <select id="plan-project" value={selectedProject} onChange={(event) => chooseProject(event.target.value)} disabled={!planProjects.length}>
+                    <option value="">{planProjects.length ? "Choose a Procore project" : "Loading Procore projects…"}</option>
+                    {planProjects.map((project) => <option key={`${project.companyId}:${project.id}`} value={`${project.companyId}:${project.id}`}>{project.name}{project.number ? ` · ${project.number}` : ""}</option>)}
+                  </select>
+                  <div className="drawing-tools"><label htmlFor="drawing-search">Current drawing sheets</label><span>{selectedDrawings.length}/4 selected</span></div>
+                  <input id="drawing-search" value={drawingSearch} onChange={(event) => setDrawingSearch(event.target.value)} placeholder="Search A2.1, floor plan, structural…" disabled={!drawings.length} />
+                  <div className="drawing-list" aria-live="polite">
+                    {drawingBusy ? <div className="drawing-state">Loading current drawings…</div> : visibleDrawings.length ? visibleDrawings.map((drawing) => <label className={`drawing-option ${selectedDrawings.includes(drawing.id) ? "chosen" : ""}`} key={drawing.id}><input type="checkbox" checked={selectedDrawings.includes(drawing.id)} onChange={() => toggleDrawing(drawing.id)} /><span><strong>{drawing.number}</strong><small>{drawing.title}</small></span><em>{drawing.revision ? `Rev ${drawing.revision}` : "Current"}</em></label>) : <div className="drawing-state">{selectedProject ? "No published drawing PDFs were found." : "Choose a project to load its current drawings."}</div>}
+                  </div>
+                </div>
+                <form className="plans-chat" onSubmit={askPlans}>
+                  <div className="plans-prompt-label"><label htmlFor="plan-question">Question about selected sheets</label><small>AI can miss details—verify critical work.</small></div>
+                  <textarea id="plan-question" value={planQuestion} onChange={(event) => setPlanQuestion(event.target.value)} placeholder="Example: What is the wall type between rooms 214 and 216, and which detail shows the head condition?" rows={4} />
+                  <button type="submit" disabled={planBusy || !selectedDrawings.length || !planQuestion.trim()}>{planBusy ? "Reading the plans…" : "Ask Jobsite Lens"}<span>→</span></button>
+                  {planError && <div className="plan-error" role="alert">{planError}</div>}
+                  {planAnswer ? <div className="plan-answer" aria-live="polite"><div><i>JL</i><strong>Plan answer</strong></div><p>{planAnswer}</p></div> : <div className="plan-guidance"><strong>Good questions to ask</strong><button type="button" onClick={() => setPlanQuestion("What dimensions and notes control this installation?")}>What dimensions control this installation?</button><button type="button" onClick={() => setPlanQuestion("Do these sheets show any coordination conflicts or missing information?")}>Are there coordination conflicts?</button><button type="button" onClick={() => setPlanQuestion("Summarize the scope shown on these sheets for the field team.")}>Summarize this scope for the field.</button></div>}
+                </form>
+              </div>
             )}
           </section>
 

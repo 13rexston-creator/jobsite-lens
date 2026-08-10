@@ -37,7 +37,7 @@ export default function Dashboard() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#" aria-label="Buildwise home"><Mark /><span>BUILDWISE</span></a>
+        <a className="brand" href="/" aria-label="Jobsite Lens home"><Mark /><span>JOBSITE LENS</span></a>
         <nav className="main-nav" aria-label="Main navigation">
           <a className="active" href="#overview"><span>⌂</span>Overview</a>
           <a href="#projects"><span>▣</span>Projects</a>

@@ -25,12 +25,13 @@ test("server-renders the Jobsite Lens product site", async () => {
 });
 
 test("includes a durable, provider-independent plan library", async () => {
-  const [library, projectsRoute, filesRoute, retryRoute, askRoute, hosting, schema] = await Promise.all([
+  const [library, projectsRoute, filesRoute, retryRoute, askRoute, planLibrary, hosting, schema] = await Promise.all([
     readFile(new URL("../app/dashboard/PlanLibrary.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/projects/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/files/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/files/[fileId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/ask/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/plan-library.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
   ]);
@@ -62,6 +63,11 @@ test("includes a durable, provider-independent plan library", async () => {
   assert.match(askRoute, /type: "input_file"/);
   assert.match(askRoute, /detail: "high"/);
   assert.match(askRoute, /suspected plan errors/);
+  assert.match(askRoute, /const safetyIdentifier = await planSafetyIdentifier\(user\.userId\)/);
+  assert.equal((askRoute.match(/safety_identifier: safetyIdentifier/g) ?? []).length, 2);
+  assert.doesNotMatch(askRoute, /safety_identifier: `jobsite-lens-\$\{user\.userId\}`/);
+  assert.match(planLibrary, /crypto\.subtle\.digest\("SHA-256"/);
+  assert.match(planLibrary, /return `jobsite-lens-\$\{hex\.slice\(0, 48\)\}`/);
   assert.match(askRoute, /visualVerification/);
   assert.match(askRoute, /"checked"/);
   assert.match(askRoute, /"partial"/);

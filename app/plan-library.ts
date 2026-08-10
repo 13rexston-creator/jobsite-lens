@@ -34,6 +34,12 @@ export async function getAuthorizedPlanUser(): Promise<ChatGPTUser | null> {
   return user;
 }
 
+export async function planSafetyIdentifier(userId: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(userId));
+  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `jobsite-lens-${hex.slice(0, 48)}`;
+}
+
 export async function openAIRequest(path: string, init: RequestInit = {}) {
   const response = await fetch(`https://api.openai.com/v1${path}`, {
     ...init,

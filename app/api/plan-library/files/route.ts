@@ -1,9 +1,31 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { planFiles, planProjects } from "../../../../db/schema";
 import { ensureVectorStore, getAuthorizedPlanUser, getOwnedPlanProject, openAIRequest, planRuntime, requirePlanStorage, safePlanFileName, uploadStoredPlanToOpenAI } from "../../../plan-library";
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
+const D1_ID_CHUNK = 80;
+const STALE_UPLOAD_AGE = 60 * 60 * 1000;
+
+async function updateFileStatusInChunks(ids: string[], values: { status: string; error: string | null; updatedAt: number }) {
+  const db = getDb();
+  for (let index = 0; index < ids.length; index += D1_ID_CHUNK) {
+    await db.update(planFiles).set(values).where(inArray(planFiles.id, ids.slice(index, index + D1_ID_CHUNK)));
+  }
+}
+
+async function recoverInterruptedUploads(projectId: string, ownerUserId: string) {
+  await getDb().update(planFiles).set({
+    status: "stored",
+    error: "Indexing was interrupted. Retry indexing when you are ready.",
+    updatedAt: Date.now(),
+  }).where(and(
+    eq(planFiles.projectId, projectId),
+    eq(planFiles.ownerUserId, ownerUserId),
+    eq(planFiles.status, "uploading"),
+    lt(planFiles.updatedAt, Date.now() - STALE_UPLOAD_AGE),
+  ));
+}
 
 async function refreshProcessingFiles(projectId: string, vectorStoreId: string, ownerUserId: string) {
   const db = getDb();
@@ -31,8 +53,8 @@ async function refreshProcessingFiles(projectId: string, vectorStoreId: string, 
     const readyIds = pending.filter((file) => file.vectorStoreFileId && remoteStatuses.get(file.vectorStoreFileId) === "completed").map((file) => file.id);
     const failedIds = pending.filter((file) => file.vectorStoreFileId && ["failed", "cancelled"].includes(remoteStatuses.get(file.vectorStoreFileId) ?? "")).map((file) => file.id);
     const now = Date.now();
-    if (readyIds.length) await db.update(planFiles).set({ status: "ready", error: null, updatedAt: now }).where(inArray(planFiles.id, readyIds));
-    if (failedIds.length) await db.update(planFiles).set({ status: "failed", error: "OpenAI could not index this PDF. Upload it again to retry.", updatedAt: now }).where(inArray(planFiles.id, failedIds));
+    if (readyIds.length) await updateFileStatusInChunks(readyIds, { status: "ready", error: null, updatedAt: now });
+    if (failedIds.length) await updateFileStatusInChunks(failedIds, { status: "failed", error: "OpenAI could not index this PDF. Retry indexing when you are ready.", updatedAt: now });
   } catch {
     // Keep the last known state; a later refresh can reconcile it.
   }
@@ -45,6 +67,7 @@ export async function GET(request: Request) {
   if (!projectId) return Response.json({ error: "Project is required." }, { status: 400 });
   const project = await getOwnedPlanProject(user, projectId);
   if (!project) return Response.json({ error: "Plan project not found." }, { status: 404 });
+  await recoverInterruptedUploads(project.id, user.userId);
   if (project.vectorStoreId) await refreshProcessingFiles(project.id, project.vectorStoreId, user.userId);
   const files = await getDb().select({
     id: planFiles.id,

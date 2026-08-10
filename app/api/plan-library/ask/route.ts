@@ -10,6 +10,7 @@ type ResponseItem = {
   results?: SearchResult[];
   content?: Array<{ type?: string; text?: string; annotations?: Annotation[] }>;
 };
+type VisualVerificationStatus = "checked" | "partial" | "size_limited" | "unavailable" | "not_run";
 
 const VISUAL_FILE_LIMIT = 3;
 const VISUAL_BYTE_LIMIT = 48 * 1024 * 1024;
@@ -46,6 +47,11 @@ export async function POST(request: Request) {
     }) as { output?: ResponseItem[] };
     let answer = outputText(result);
     if (!answer) throw new Error("No answer was returned from the uploaded plans.");
+    let visualVerification: { status: VisualVerificationStatus; checkedFiles: string[]; skippedFiles: string[] } = {
+      status: "not_run",
+      checkedFiles: [],
+      skippedFiles: [],
+    };
     const annotations = responseAnnotations(result.output);
     let sources = [...new Map(annotations
       .filter((annotation) => annotation.type === "file_citation" && annotation.filename)
@@ -59,13 +65,21 @@ export async function POST(request: Request) {
       const availableFiles = await getDb().select({ openaiFileId: planFiles.openaiFileId, fileName: planFiles.fileName, size: planFiles.size })
         .from(planFiles).where(and(eq(planFiles.projectId, project.id), eq(planFiles.ownerUserId, user.userId), eq(planFiles.status, "ready")));
       const byOpenAIId = new Map(availableFiles.filter((file) => file.openaiFileId).map((file) => [file.openaiFileId!, file]));
+      const rankedFiles = rankedIds.flatMap((id) => {
+        const file = byOpenAIId.get(id);
+        return file ? [file] : [];
+      });
       const visualFiles: typeof availableFiles = [];
       let visualBytes = 0;
-      for (const id of rankedIds) {
-        const file = byOpenAIId.get(id);
-        if (!file || visualFiles.length >= VISUAL_FILE_LIMIT || visualBytes + file.size > VISUAL_BYTE_LIMIT) continue;
+      for (const file of rankedFiles) {
+        if (visualFiles.length >= VISUAL_FILE_LIMIT || visualBytes + file.size > VISUAL_BYTE_LIMIT) continue;
         visualFiles.push(file);
         visualBytes += file.size;
+      }
+      const selectedIds = new Set(visualFiles.map((file) => file.openaiFileId));
+      const skippedFiles = rankedFiles.filter((file) => !selectedIds.has(file.openaiFileId)).map((file) => file.fileName);
+      if (!visualFiles.length && rankedFiles.length) {
+        visualVerification = { status: "size_limited", checkedFiles: [], skippedFiles };
       }
       if (visualFiles.length) {
         try {
@@ -86,15 +100,25 @@ export async function POST(request: Request) {
             }),
           }) as { output?: ResponseItem[] };
           const visuallyChecked = outputText(visualResult);
-          if (visuallyChecked) answer = visuallyChecked;
+          if (!visuallyChecked) throw new Error("Visual verification did not return an answer.");
+          answer = visuallyChecked;
+          visualVerification = {
+            status: skippedFiles.length ? "partial" : "checked",
+            checkedFiles: visualFiles.map((file) => file.fileName),
+            skippedFiles,
+          };
           const visualSources = visualFiles.map((file) => ({ fileId: file.openaiFileId, filename: file.fileName }));
           sources = [...new Map([...sources, ...visualSources].map((source) => [source.fileId ?? source.filename, source])).values()];
         } catch {
-          // The full-project retrieval answer remains useful if visual verification is temporarily unavailable.
+          visualVerification = {
+            status: "unavailable",
+            checkedFiles: [],
+            skippedFiles: rankedFiles.map((file) => file.fileName),
+          };
         }
       }
     }
-    return Response.json({ answer, sources });
+    return Response.json({ answer, sources, visualVerification });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Could not answer this plan question." }, { status: 502 });
   }

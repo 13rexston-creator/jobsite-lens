@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type LibraryProject = { id: string; name: string; source: string; fileCount: number; updatedAt: number };
 type LibraryFile = { id: string; fileName: string; size: number; status: "uploading" | "stored" | "processing" | "ready" | "failed"; error: string | null; createdAt: number };
 type UploadProgress = { name: string; state: "waiting" | "uploading" | "done" | "failed"; message?: string };
+type VisualVerification = { status: "checked" | "partial" | "size_limited" | "unavailable" | "not_run"; checkedFiles: string[]; skippedFiles: string[] };
 
 function sizeLabel(bytes: number) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -22,6 +23,7 @@ export default function PlanLibrary() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [sources, setSources] = useState<string[]>([]);
+  const [visualVerification, setVisualVerification] = useState<VisualVerification | null>(null);
   const [busy, setBusy] = useState(false);
   const [retryingFileId, setRetryingFileId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -139,6 +141,7 @@ export default function PlanLibrary() {
     setError("");
     setAnswer("");
     setSources([]);
+    setVisualVerification(null);
     try {
       const response = await fetch("/api/plan-library/ask", {
         method: "POST",
@@ -149,6 +152,7 @@ export default function PlanLibrary() {
       if (!response.ok) throw new Error(data.error || "Could not answer from these plans.");
       setAnswer(data.answer);
       setSources((data.sources ?? []).map((source: { filename: string }) => source.filename));
+      setVisualVerification(data.visualVerification ?? null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not answer from these plans.");
     } finally {
@@ -190,7 +194,7 @@ export default function PlanLibrary() {
         <div className="library-manager">
           <div className="library-project-row">
             <label htmlFor="library-project">Project library</label>
-            <select id="library-project" value={selectedProjectId} disabled={loading || !projects.length} onChange={(event) => { setSelectedProjectId(event.target.value); setAnswer(""); setSources([]); }}>
+            <select id="library-project" value={selectedProjectId} disabled={loading || !projects.length} onChange={(event) => { setSelectedProjectId(event.target.value); setAnswer(""); setSources([]); setVisualVerification(null); }}>
               {projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.fileCount ?? 0} files</option>)}
             </select>
           </div>
@@ -207,7 +211,7 @@ export default function PlanLibrary() {
           >
             <span className="upload-icon">↑</span>
             <strong>Drop plan PDFs here</strong>
-            <small>Upload one or many files in batches. Each PDF can be up to 200 MB. Search indexing can be started later.</small>
+            <small>Upload one or many files in batches. Each PDF can be up to 200 MB. Search indexing can be started later; split packages below 48 MB for visual sheet verification.</small>
             <button type="button" disabled={!selectedProjectId || hasActiveUploads} onClick={() => fileInput.current?.click()}>{hasActiveUploads ? "Uploading…" : "Choose PDF plans"}</button>
             <input ref={fileInput} hidden type="file" accept="application/pdf,.pdf" multiple onChange={(event) => uploadFiles(Array.from(event.target.files ?? []))} />
           </div>
@@ -227,7 +231,7 @@ export default function PlanLibrary() {
           <button type="submit" disabled={busy || !readyCount || !question.trim()}>{busy ? "Searching the plans…" : "Ask the plan library"}<span>→</span></button>
           {!readyCount && <p className="library-note">Plans marked “Stored” are safe in your library. Add API credits, then retry indexing when you are ready to search.</p>}
           {error && <div className="plan-error" role="alert">{error}{/credits|quota|billing/i.test(error) && <a href="https://platform.openai.com/settings/organization/billing" target="_blank" rel="noreferrer">Add OpenAI API credits →</a>}</div>}
-          {answer ? <div className="library-answer" aria-live="polite"><div><span className="lens-avatar">JL</span><strong>Answer from the plans</strong></div><p>{answer}</p>{sources.length > 0 && <footer><strong>Sources</strong>{sources.map((source) => <span key={source}>{source}</span>)}</footer>}</div> : <div className="library-prompts"><strong>Try asking</strong><button type="button" onClick={() => setQuestion("Summarize the construction scope and major drawing disciplines in this plan set.")}>Summarize the full plan set</button><button type="button" onClick={() => setQuestion("Find coordination conflicts, inconsistent notes, or missing details across the plans.")}>Find coordination conflicts</button><button type="button" onClick={() => setQuestion("What information should the field team verify before starting work?")}>What should the field verify?</button></div>}
+          {answer ? <div className="library-answer" aria-live="polite"><div><span className="lens-avatar">JL</span><strong>Answer from the plans</strong></div><p>{answer}</p>{visualVerification && visualVerification.status !== "checked" && <aside className="visual-verification-note">{visualVerification.status === "partial" ? "Visual verification was partial. Some relevant plan packages could not be visually inspected in this pass (up to 3 PDFs / 48 MB combined); split large packages into smaller PDFs for dimensions, symbols, and geometry to be checked." : visualVerification.status === "size_limited" ? "This answer used searchable plan text. Relevant plan packages exceeded the 48 MB visual limit and were not visually inspected; split them into smaller PDFs for dimensions, symbols, and geometry to be checked." : visualVerification.status === "unavailable" ? "This answer used searchable plan text, but visual sheet verification was temporarily unavailable. Verify dimensions, symbols, and geometry against the drawings." : "This answer used searchable plan text. Visual sheet verification did not run, so verify dimensions, symbols, and geometry against the drawings."}</aside>}{sources.length > 0 && <footer><strong>Sources</strong>{sources.map((source) => <span key={source}>{source}</span>)}</footer>}</div> : <div className="library-prompts"><strong>Try asking</strong><button type="button" onClick={() => setQuestion("Summarize the construction scope and major drawing disciplines in this plan set.")}>Summarize the full plan set</button><button type="button" onClick={() => setQuestion("Find coordination conflicts, inconsistent notes, or missing details across the plans.")}>Find coordination conflicts</button><button type="button" onClick={() => setQuestion("What information should the field team verify before starting work?")}>What should the field verify?</button></div>}
         </form>
       </div>
     </section>

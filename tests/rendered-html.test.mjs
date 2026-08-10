@@ -25,10 +25,11 @@ test("server-renders the Jobsite Lens product site", async () => {
 });
 
 test("includes a durable, provider-independent plan library", async () => {
-  const [library, projectsRoute, filesRoute, askRoute, hosting, schema] = await Promise.all([
+  const [library, projectsRoute, filesRoute, retryRoute, askRoute, hosting, schema] = await Promise.all([
     readFile(new URL("../app/dashboard/PlanLibrary.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/projects/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/files/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/plan-library/files/[fileId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/ask/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
@@ -47,11 +48,30 @@ test("includes a durable, provider-independent plan library", async () => {
   assert.match(filesRoute, /indexingDeferred/);
   assert.match(filesRoute, /200 MB/);
   assert.match(filesRoute, /getAuthorizedPlanUser/);
+  assert.match(filesRoute, /const D1_ID_CHUNK = 80/);
+  assert.match(filesRoute, /updateFileStatusInChunks/);
+  assert.match(filesRoute, /ids\.slice\(index, index \+ D1_ID_CHUNK\)/);
+  assert.match(filesRoute, /if \(readyIds\.length\) await updateFileStatusInChunks\(readyIds/);
+  assert.match(filesRoute, /if \(failedIds\.length\) await updateFileStatusInChunks\(failedIds/);
+  assert.match(filesRoute, /async function recoverInterruptedUploads[\s\S]*?eq\(planFiles\.projectId, projectId\)[\s\S]*?eq\(planFiles\.ownerUserId, ownerUserId\)[\s\S]*?eq\(planFiles\.status, "uploading"\)[\s\S]*?lt\(planFiles\.updatedAt, Date\.now\(\) - STALE_UPLOAD_AGE\)/);
+  assert.match(filesRoute, /await recoverInterruptedUploads\(project\.id, user\.userId\)/);
+  assert.match(retryRoute, /const \[claimed\] = await db\.update\(planFiles\)\.set\(\{[\s\S]*?status: "uploading"[\s\S]*?\}\)\.where\(and\(\s*eq\(planFiles\.id, file\.id\),\s*eq\(planFiles\.ownerUserId, user\.userId\),\s*inArray\(planFiles\.status, \["stored", "failed"\]\),\s*\)\)\.returning\(\{ id: planFiles\.id \}\)/);
+  assert.match(retryRoute, /if \(!claimed\)/);
   assert.match(askRoute, /type: "file_search"/);
   assert.match(askRoute, /vector_store_ids/);
   assert.match(askRoute, /type: "input_file"/);
   assert.match(askRoute, /detail: "high"/);
   assert.match(askRoute, /suspected plan errors/);
+  assert.match(askRoute, /visualVerification/);
+  assert.match(askRoute, /"checked"/);
+  assert.match(askRoute, /"partial"/);
+  assert.match(askRoute, /"size_limited"/);
+  assert.match(askRoute, /"unavailable"/);
+  assert.match(askRoute, /Response\.json\(\{ answer, sources, visualVerification \}\)/);
+  assert.match(library, /visualVerification/);
+  assert.match(library, /visualVerification\.status !== "checked"/);
+  assert.match(library, /not visually inspected/i);
+  assert.match(library, /48 MB/);
   assert.match(hosting, /"r2": "PLANS"/);
   assert.match(schema, /plan_projects/);
   assert.match(schema, /plan_files/);

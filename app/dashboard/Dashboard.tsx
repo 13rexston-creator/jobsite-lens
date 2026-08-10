@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import PlanLibrary from "./PlanLibrary";
 
 type ProcoreProject = { id: string; name: string; number: string | null; companyId: string; companyName: string };
@@ -124,7 +125,7 @@ export default function Dashboard() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="Jobsite Lens home"><Mark /><span>JOBSITE LENS</span></a>
+        <Link className="brand" href="/" aria-label="Jobsite Lens home"><Mark /><span>JOBSITE LENS</span></Link>
         <nav className="main-nav" aria-label="Main navigation">
           <a className="active" href="#overview"><span>⌂</span>Overview</a>
           <a href="#projects"><span>▣</span>Projects</a>
@@ -152,7 +153,7 @@ export default function Dashboard() {
         <header className="topbar">
           <button className="project-switcher" onClick={() => notify("Project switcher opened") }><span>▣</span> All projects <i>⌄</i></button>
           <div className="top-actions">
-            {searchOpen && <input autoFocus className="search-input" placeholder="Search projects, RFIs…" aria-label="Search" />}
+            {searchOpen && <input className="search-input" placeholder="Search projects, RFIs…" aria-label="Search" />}
             <button className="icon-button" aria-label="Search" onClick={() => setSearchOpen(!searchOpen)}>⌕</button>
             <button className="icon-button notification" aria-label="Notifications" onClick={() => notify("You have 3 new notifications")}>♢<i>3</i></button>
             <button className="create-button" onClick={() => notify("New item menu opened")}>＋ Create <span>⌄</span></button>
@@ -183,8 +184,10 @@ export default function Dashboard() {
                   notify("Procore disconnected");
                 }
               }}>Disconnect</button>
+            ) : procore.loading ? (
+              <button className="procore-connect disabled" type="button" disabled>Checking Procore…</button>
             ) : (
-              <a className={`procore-connect ${procore.loading ? "disabled" : ""}`} href={procore.loading ? undefined : "/api/procore/connect"}>Connect Procore <span>→</span></a>
+              <a className="procore-connect" href="/api/procore/connect">Connect Procore <span>→</span></a>
             )}
           </section>
 

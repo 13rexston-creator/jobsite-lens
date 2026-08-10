@@ -23,6 +23,7 @@ export default function PlanLibrary() {
   const [answer, setAnswer] = useState("");
   const [sources, setSources] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [retryingFileId, setRetryingFileId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -43,7 +44,7 @@ export default function PlanLibrary() {
 
   useEffect(() => {
     if (!selectedProjectId || !processingCount) return;
-    const timer = window.setInterval(() => loadFiles(selectedProjectId, true), 8000);
+    const timer = window.setInterval(() => loadFiles(selectedProjectId, true), 15000);
     return () => window.clearInterval(timer);
   }, [selectedProjectId, processingCount]);
 
@@ -116,6 +117,7 @@ export default function PlanLibrary() {
         const uploadUrl = new URL("/api/plan-library/files", window.location.origin);
         uploadUrl.searchParams.set("projectId", selectedProjectId);
         uploadUrl.searchParams.set("fileName", file.name);
+        uploadUrl.searchParams.set("index", "false");
         const response = await fetch(uploadUrl, { method: "POST", headers: { "content-type": "application/pdf" }, body: file });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Upload failed.");
@@ -154,6 +156,22 @@ export default function PlanLibrary() {
     }
   }
 
+  async function retryIndex(fileId: string) {
+    setRetryingFileId(fileId);
+    setError("");
+    try {
+      const response = await fetch(`/api/plan-library/files/${encodeURIComponent(fileId)}`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not retry plan indexing.");
+      setFiles((current) => current.map((file) => file.id === fileId ? data.file : file));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not retry plan indexing.");
+      await loadFiles(selectedProjectId, true);
+    } finally {
+      setRetryingFileId("");
+    }
+  }
+
   const uploadSummary = useMemo(() => {
     if (!uploads.length) return "";
     const completed = uploads.filter((upload) => upload.state === "done").length;
@@ -189,7 +207,7 @@ export default function PlanLibrary() {
           >
             <span className="upload-icon">↑</span>
             <strong>Drop plan PDFs here</strong>
-            <small>Upload one or many files in batches. Each PDF can be up to 45 MB.</small>
+            <small>Upload one or many files in batches. Each PDF can be up to 200 MB. Search indexing can be started later.</small>
             <button type="button" disabled={!selectedProjectId || hasActiveUploads} onClick={() => fileInput.current?.click()}>{hasActiveUploads ? "Uploading…" : "Choose PDF plans"}</button>
             <input ref={fileInput} hidden type="file" accept="application/pdf,.pdf" multiple onChange={(event) => uploadFiles(Array.from(event.target.files ?? []))} />
           </div>
@@ -198,7 +216,7 @@ export default function PlanLibrary() {
 
           <div className="library-files">
             <div className="library-files-title"><strong>{selectedProject?.name ?? "Plans"}</strong><span>{files.length} PDF{files.length === 1 ? "" : "s"}{processingCount ? ` · ${processingCount} indexing` : ""}</span></div>
-            {files.length ? files.map((file) => <a className="library-file" key={file.id} href={`/api/plan-library/files/${file.id}`} target="_blank" rel="noreferrer"><span className="pdf-chip">PDF</span><span><strong>{file.fileName}</strong><small>{sizeLabel(file.size)} · {new Date(file.createdAt).toLocaleDateString()}</small></span><em className={file.status}>{file.status === "ready" ? "Searchable" : file.status === "stored" ? "Stored" : file.status === "failed" ? "Needs attention" : "Indexing"}</em></a>) : <div className="library-empty">No plan PDFs yet. Add the Merced Creek drawing packages here.</div>}
+            {files.length ? files.map((file) => <div className="library-file-row" key={file.id}><a className="library-file" href={`/api/plan-library/files/${file.id}`} target="_blank" rel="noreferrer"><span className="pdf-chip">PDF</span><span><strong>{file.fileName}</strong><small>{sizeLabel(file.size)} · {new Date(file.createdAt).toLocaleDateString()}</small></span><em className={file.status}>{file.status === "ready" ? "Searchable" : file.status === "stored" ? "Stored" : file.status === "failed" ? "Needs attention" : "Indexing"}</em></a>{(file.status === "failed" || file.status === "stored") && <button type="button" disabled={retryingFileId === file.id} onClick={() => retryIndex(file.id)}>{retryingFileId === file.id ? "Retrying…" : "Retry indexing"}</button>}</div>) : <div className="library-empty">No plan PDFs yet. Add the Merced Creek drawing packages here.</div>}
           </div>
         </div>
 
@@ -207,8 +225,8 @@ export default function PlanLibrary() {
           <label htmlFor="library-question">Question about {selectedProject?.name ?? "this project"}</label>
           <textarea id="library-question" value={question} onChange={(event) => setQuestion(event.target.value)} rows={5} placeholder="Example: What are the slab edge conditions at the apartment balconies, and which details control them?" />
           <button type="submit" disabled={busy || !readyCount || !question.trim()}>{busy ? "Searching the plans…" : "Ask the plan library"}<span>→</span></button>
-          {!readyCount && <p className="library-note">Upload a PDF and wait for “Searchable” before asking questions.</p>}
-          {error && <div className="plan-error" role="alert">{error}</div>}
+          {!readyCount && <p className="library-note">Plans marked “Stored” are safe in your library. Add API credits, then retry indexing when you are ready to search.</p>}
+          {error && <div className="plan-error" role="alert">{error}{/credits|quota|billing/i.test(error) && <a href="https://platform.openai.com/settings/organization/billing" target="_blank" rel="noreferrer">Add OpenAI API credits →</a>}</div>}
           {answer ? <div className="library-answer" aria-live="polite"><div><span className="lens-avatar">JL</span><strong>Answer from the plans</strong></div><p>{answer}</p>{sources.length > 0 && <footer><strong>Sources</strong>{sources.map((source) => <span key={source}>{source}</span>)}</footer>}</div> : <div className="library-prompts"><strong>Try asking</strong><button type="button" onClick={() => setQuestion("Summarize the construction scope and major drawing disciplines in this plan set.")}>Summarize the full plan set</button><button type="button" onClick={() => setQuestion("Find coordination conflicts, inconsistent notes, or missing details across the plans.")}>Find coordination conflicts</button><button type="button" onClick={() => setQuestion("What information should the field team verify before starting work?")}>What should the field verify?</button></div>}
         </form>
       </div>

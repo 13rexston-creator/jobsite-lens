@@ -51,6 +51,55 @@ export async function openAIRequest(path: string, init: RequestInit = {}) {
   return data;
 }
 
+export async function uploadStoredPlanToOpenAI(storageKey: string, fileName: string) {
+  const object = await requirePlanStorage().get(storageKey);
+  if (!object) throw new Error("The stored plan PDF could not be opened for indexing.");
+  const boundary = `jobsite-lens-${crypto.randomUUID()}`;
+  const headerName = safePlanFileName(fileName).replace(/["\r\n]/g, "");
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode(
+    `--${boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nassistants\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${headerName}"\r\nContent-Type: application/pdf\r\n\r\n`,
+  );
+  const suffix = encoder.encode(`\r\n--${boundary}--\r\n`);
+  const reader = object.body.getReader();
+  let prefixSent = false;
+  let bodyFinished = false;
+  const multipart = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        if (!prefixSent) {
+          prefixSent = true;
+          controller.enqueue(prefix);
+          return;
+        }
+        if (!bodyFinished) {
+          const chunk = await reader.read();
+          if (!chunk.done) {
+            controller.enqueue(chunk.value);
+            return;
+          }
+          bodyFinished = true;
+        }
+        controller.enqueue(suffix);
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel() {
+      return reader.cancel();
+    },
+  });
+  const uploaded = await openAIRequest("/files", {
+    method: "POST",
+    headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    body: multipart,
+  }) as { id?: string };
+  if (!uploaded.id) throw new Error("OpenAI did not return a file id.");
+  return uploaded.id;
+}
+
 export async function getOwnedPlanProject(user: ChatGPTUser, projectId: string) {
   const [project] = await getDb().select().from(planProjects)
     .where(and(eq(planProjects.id, projectId), eq(planProjects.ownerUserId, user.userId))).limit(1);

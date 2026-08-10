@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const projects = [
   { name: "Riverstone Medical Center", code: "RMC-024", location: "Denver, CO", progress: 68, value: "$12.4M", status: "On track", color: "blue" },
@@ -28,6 +28,28 @@ export default function Dashboard() {
   const [filter, setFilter] = useState("All projects");
   const [searchOpen, setSearchOpen] = useState(false);
   const [toast, setToast] = useState("");
+  const [procore, setProcore] = useState<{
+    loading: boolean;
+    connected: boolean;
+    name?: string | null;
+    login?: string;
+  }>({ loading: true, connected: false });
+
+  useEffect(() => {
+    const result = new URLSearchParams(window.location.search).get("procore");
+    if (result === "connected") notify("Procore connected successfully");
+    if (result && result !== "connected") notify("Procore connection was not completed");
+
+    fetch("/api/procore/status")
+      .then((response) => response.ok ? response.json() : Promise.reject())
+      .then((data) => setProcore({
+        loading: false,
+        connected: data.connected,
+        name: data.connection?.procoreName,
+        login: data.connection?.procoreLogin,
+      }))
+      .catch(() => setProcore({ loading: false, connected: false }));
+  }, []);
 
   function notify(message: string) {
     setToast(message);
@@ -77,6 +99,27 @@ export default function Dashboard() {
             <div><p className="eyebrow">SUNDAY, AUGUST 9</p><h1>Good morning, Brexston.</h1><p>Here’s what’s happening across your projects today.</p></div>
             <div className="weather"><span>☀</span><div><strong>78°</strong><small>Denver · Clear</small></div></div>
           </div>
+
+          <section className={`procore-connection ${procore.connected ? "connected" : ""}`} aria-label="Procore connection">
+            <div className="procore-symbol"><span>PC</span></div>
+            <div className="procore-copy">
+              <p>PROCORE CONNECTION</p>
+              <strong>{procore.loading ? "Checking connection…" : procore.connected ? "Your Procore account is connected" : "Bring your live project data into Jobsite Lens"}</strong>
+              <small>{procore.connected ? `${procore.name || "Procore user"} · ${procore.login}` : "Authorize your account securely. Jobsite Lens only receives data your Procore permissions allow."}</small>
+            </div>
+            {procore.connected ? (
+              <button className="procore-secondary" onClick={async () => {
+                if (!window.confirm("Disconnect your Procore account from Jobsite Lens?")) return;
+                const response = await fetch("/api/procore/disconnect", { method: "POST" });
+                if (response.ok) {
+                  setProcore({ loading: false, connected: false });
+                  notify("Procore disconnected");
+                }
+              }}>Disconnect</button>
+            ) : (
+              <a className={`procore-connect ${procore.loading ? "disabled" : ""}`} href={procore.loading ? undefined : "/api/procore/connect"}>Connect Procore <span>→</span></a>
+            )}
+          </section>
 
           <section className="metric-grid" aria-label="Portfolio summary">
             <article><div className="metric-icon blue">▣</div><div><p>ACTIVE PROJECTS</p><strong>8</strong><small><em>+2</em> this quarter</small></div></article>

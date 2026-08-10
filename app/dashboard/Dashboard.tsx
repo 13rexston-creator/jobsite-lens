@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import PlanLibrary from "./PlanLibrary";
 
 type ProcoreProject = { id: string; name: string; number: string | null; companyId: string; companyName: string };
 type ProcoreDrawing = { id: string; number: string; title: string; revision: string | null; date: string | null; discipline: string | null; size: number | null };
@@ -164,10 +165,12 @@ export default function Dashboard() {
             <div className="weather"><span>☀</span><div><strong>78°</strong><small>Denver · Clear</small></div></div>
           </div>
 
+          <PlanLibrary />
+
           <section className={`procore-connection ${procore.connected ? "connected" : ""}`} aria-label="Procore connection">
             <div className="procore-symbol"><span>PC</span></div>
             <div className="procore-copy">
-              <p>PROCORE CONNECTION</p>
+              <p>OPTIONAL PROCORE CONNECTION</p>
               <strong>{procore.loading ? "Checking connection…" : procore.connected ? "Your Procore account is connected" : "Bring your live project data into Jobsite Lens"}</strong>
               <small>{procore.connected ? `${procore.name || "Procore user"} · ${procore.login}` : "Authorize your account securely. Jobsite Lens only receives data your Procore permissions allow."}</small>
             </div>
@@ -185,9 +188,9 @@ export default function Dashboard() {
             )}
           </section>
 
-          <section className="plans-assistant" id="drawings" aria-labelledby="plans-title">
+          <section className="plans-assistant" id="procore-drawings" aria-labelledby="plans-title">
             <div className="plans-heading">
-              <div><p>PROCORE DRAWING INTELLIGENCE</p><h2 id="plans-title">Ask the plans</h2><span>Select current drawing sheets and ask a field question. Every answer stays grounded in those sheets.</span></div>
+              <div><p>LIVE PROCORE DRAWINGS</p><h2 id="plans-title">Ask selected Procore sheets</h2><span>Use this when a production Procore connection is available. Uploaded project libraries work independently above.</span></div>
               <div className="plans-badge"><i /> {procore.connected ? "Live Procore access" : "Connect Procore to begin"}</div>
             </div>
             {!procore.connected && !procore.loading ? <div className="plans-empty"><strong>Your drawings are one connection away.</strong><span>Connect Procore above, then choose a project and its current plan sheets.</span></div> : (

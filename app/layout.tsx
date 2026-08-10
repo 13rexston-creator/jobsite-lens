@@ -17,15 +17,15 @@ export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:5173";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
-  const image = `${protocol}://${host}/og.png`;
+  const image = `${protocol}://${host}/og-company.png`;
 
   return {
-    title: "Buildwise — Construction Management",
-    description: "Keep every project, team, and field update moving from one clear workspace.",
+    title: "Buildwise — Build with clarity",
+    description: "Buildwise brings construction project information into one clear, intelligent workspace.",
     icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
     openGraph: {
-      title: "Buildwise — Construction Management",
-      description: "Projects. Field. Financials. One workspace.",
+      title: "Buildwise — Build with clarity",
+      description: "Your projects already have the answers. Buildwise helps you find them.",
       images: [{ url: image, width: 1200, height: 630, alt: "Buildwise — Build with clarity" }],
     },
     twitter: { card: "summary_large_image", images: [image] },

@@ -1,133 +1,71 @@
-"use client";
-
-import { useState } from "react";
-
-const projects = [
-  { name: "Riverstone Medical Center", code: "RMC-024", location: "Denver, CO", progress: 68, value: "$12.4M", status: "On track", color: "blue" },
-  { name: "Canyon Ridge Apartments", code: "CRA-017", location: "Aurora, CO", progress: 42, value: "$8.7M", status: "At risk", color: "amber" },
-  { name: "Northfield Distribution Hub", code: "NDH-009", location: "Commerce City, CO", progress: 86, value: "$6.2M", status: "On track", color: "green" },
-];
-
-const activity = [
-  { icon: "RFI", title: "RFI #084 needs a response", detail: "Riverstone Medical Center · Level 3 duct conflict", time: "18 min ago", tone: "orange" },
-  { icon: "SUB", title: "Submittal #126 was approved", detail: "Northfield Distribution Hub · Dock equipment", time: "1 hr ago", tone: "green" },
-  { icon: "OBS", title: "Safety observation assigned to you", detail: "Canyon Ridge Apartments · Building B", time: "2 hrs ago", tone: "red" },
-];
-
-const schedule = [
-  { time: "7:00", period: "AM", title: "Site safety walk", project: "Riverstone Medical Center", color: "#ff6b2c" },
-  { time: "9:30", period: "AM", title: "Owner progress meeting", project: "Canyon Ridge Apartments", color: "#2768e8" },
-  { time: "2:00", period: "PM", title: "Concrete pre-pour", project: "Northfield Distribution Hub", color: "#20a66a" },
-];
-
 function Mark() {
   return <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>;
 }
 
-export default function Home() {
-  const [filter, setFilter] = useState("All projects");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [toast, setToast] = useState("");
+const projectRows = [
+  ["Riverstone Medical Center", "RMC-024", "68%", "On track"],
+  ["Canyon Ridge Apartments", "CRA-017", "42%", "Review"],
+  ["Northfield Distribution Hub", "NDH-009", "86%", "On track"],
+];
 
-  function notify(message: string) {
-    setToast(message);
-    window.setTimeout(() => setToast(""), 2600);
-  }
-
+export default function CompanySite() {
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <a className="brand" href="#" aria-label="Buildwise home"><Mark /><span>BUILDWISE</span></a>
-        <nav className="main-nav" aria-label="Main navigation">
-          <a className="active" href="#overview"><span>⌂</span>Overview</a>
-          <a href="#projects"><span>▣</span>Projects</a>
-          <a href="#schedule"><span>□</span>Schedule</a>
-          <a href="#financials"><span>◇</span>Financials</a>
-          <a href="#team"><span>♙</span>Team</a>
-          <p>PROJECT TOOLS</p>
-          <a href="#daily"><span>≡</span>Daily log</a>
-          <a href="#drawings"><span>⌑</span>Drawings</a>
-          <a href="#rfis"><span>?</span>RFIs <b>7</b></a>
-          <a href="#submittals"><span>✓</span>Submittals <b>12</b></a>
-          <a href="#photos"><span>▧</span>Photos</a>
-          <a href="#directory"><span>♧</span>Directory</a>
+    <div className="company-site">
+      <header className="company-nav">
+        <a className="company-brand" href="#top" aria-label="Buildwise home"><Mark /><strong>BUILDWISE</strong></a>
+        <nav aria-label="Company navigation">
+          <a href="#product">Product</a><a href="#how">How it works</a><a href="#company">Company</a>
         </nav>
-        <div className="help-card">
-          <span>?</span>
-          <div><strong>Need help?</strong><small>Visit the Help Center</small></div>
-        </div>
-        <button className="user-card" onClick={() => notify("Account menu coming next") }>
-          <span className="avatar">BD</span><span><strong>Brexston Duffin</strong><small>Administrator</small></span><i>•••</i>
-        </button>
-      </aside>
+        <a className="nav-login" href="/dashboard">Open workspace <span>→</span></a>
+      </header>
 
-      <main>
-        <header className="topbar">
-          <button className="project-switcher" onClick={() => notify("Project switcher opened") }><span>▣</span> All projects <i>⌄</i></button>
-          <div className="top-actions">
-            {searchOpen && <input autoFocus className="search-input" placeholder="Search projects, RFIs…" aria-label="Search" />}
-            <button className="icon-button" aria-label="Search" onClick={() => setSearchOpen(!searchOpen)}>⌕</button>
-            <button className="icon-button notification" aria-label="Notifications" onClick={() => notify("You have 3 new notifications")}>♢<i>3</i></button>
-            <button className="create-button" onClick={() => notify("New item menu opened")}>＋ Create <span>⌄</span></button>
+      <main id="top" className="company-main">
+        <section className="hero">
+          <div className="hero-copy">
+            <div className="launch-pill"><span /> Building the intelligence layer for construction</div>
+            <h1>Your projects already have the answers.</h1>
+            <p>Buildwise brings project information into one clear workspace—so construction teams can find what matters, understand what changed, and act with confidence.</p>
+            <div className="hero-actions"><a className="primary-cta" href="/dashboard">See the workspace <span>→</span></a><a className="text-cta" href="#product">Explore the product ↓</a></div>
+            <div className="hero-proof"><span><b>One view</b><small>Across every project</small></span><i /><span><b>Permission-aware</b><small>Your access stays in control</small></span><i /><span><b>Built for the field</b><small>Fast, direct answers</small></span></div>
           </div>
-        </header>
-
-        <div className="content" id="overview">
-          <div className="welcome-row">
-            <div><p className="eyebrow">SUNDAY, AUGUST 9</p><h1>Good morning, Brexston.</h1><p>Here’s what’s happening across your projects today.</p></div>
-            <div className="weather"><span>☀</span><div><strong>78°</strong><small>Denver · Clear</small></div></div>
+          <div className="product-frame" aria-label="Buildwise product preview">
+            <div className="frame-bar"><span><i /><i /><i /></span><small>Portfolio overview</small><b>Live</b></div>
+            <div className="frame-body">
+              <aside><Mark /><i className="nav-line active"/><i className="nav-line"/><i className="nav-line"/><i className="nav-line short"/><i className="nav-divider"/><i className="nav-line"/><i className="nav-line short"/></aside>
+              <div className="preview-main">
+                <div className="preview-title"><span><small>PORTFOLIO</small><b>Good morning, Brexston.</b></span><button>＋ Create</button></div>
+                <div className="preview-metrics"><span><small>ACTIVE PROJECTS</small><b>8</b></span><span><small>OPEN RFIs</small><b>23</b></span><span><small>PENDING</small><b>16</b></span></div>
+                <div className="preview-panel"><div><b>Active projects</b><small>Progress across your portfolio</small></div>{projectRows.map(row => <span key={row[1]}><i /><strong>{row[0]}<small>{row[1]}</small></strong><em><small>PROGRESS</small>{row[2]}</em><b>{row[3]}</b></span>)}</div>
+              </div>
+            </div>
           </div>
+        </section>
 
-          <section className="metric-grid" aria-label="Portfolio summary">
-            <article><div className="metric-icon blue">▣</div><div><p>ACTIVE PROJECTS</p><strong>8</strong><small><em>+2</em> this quarter</small></div></article>
-            <article><div className="metric-icon orange">?</div><div><p>OPEN RFIs</p><strong>23</strong><small><em className="warn">7 overdue</em></small></div></article>
-            <article><div className="metric-icon green">✓</div><div><p>PENDING SUBMITTALS</p><strong>16</strong><small><em>5 due this week</em></small></div></article>
-            <article><div className="metric-icon violet">$</div><div><p>PORTFOLIO VALUE</p><strong>$42.8M</strong><small><em>68%</em> complete</small></div></article>
-          </section>
+        <section className="signal-strip"><p>FROM FIELD DETAIL TO PORTFOLIO CLARITY</p><div><span>Projects</span><i>×</i><span>RFIs</span><i>×</i><span>Submittals</span><i>×</i><span>Financials</span><i>×</i><span>Daily logs</span></div></section>
 
-          <div className="dashboard-grid">
-            <section className="panel projects-panel" id="projects">
-              <div className="panel-head"><div><h2>Active projects</h2><p>Progress across your portfolio</p></div><button onClick={() => notify("All projects selected")}>View all <span>→</span></button></div>
-              <div className="filter-row" role="group" aria-label="Project filters">
-                {["All projects", "On track", "At risk"].map(item => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}
-              </div>
-              <div className="project-list">
-                {projects.filter(p => filter === "All projects" || p.status === filter).map((project) => (
-                  <button className="project-row" key={project.code} onClick={() => notify(`${project.name} opened`)}>
-                    <span className={`project-thumb ${project.color}`}><Mark /></span>
-                    <span className="project-info"><strong>{project.name}</strong><small>{project.code} · {project.location}</small></span>
-                    <span className="progress-wrap"><span><small>PROGRESS</small><strong>{project.progress}%</strong></span><i><b style={{ width: `${project.progress}%` }} /></i></span>
-                    <span className="project-value"><small>CONTRACT VALUE</small><strong>{project.value}</strong></span>
-                    <span className={`status ${project.status === "At risk" ? "risk" : "track"}`}>{project.status}</span><span className="chevron">›</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <section className="panel schedule-panel" id="schedule">
-              <div className="panel-head"><div><h2>Today’s schedule</h2><p>3 events · Sunday, Aug 9</p></div><button onClick={() => notify("Calendar opened")}>View calendar <span>→</span></button></div>
-              <div className="schedule-list">
-                {schedule.map((event) => <button key={event.title} className="schedule-item" onClick={() => notify(`${event.title} opened`)}>
-                  <span className="event-time"><strong>{event.time}</strong><small>{event.period}</small></span>
-                  <i style={{ backgroundColor: event.color }} />
-                  <span><strong>{event.title}</strong><small>{event.project}</small></span>
-                </button>)}
-              </div>
-              <button className="add-event" onClick={() => notify("New event started")}>＋ Add event</button>
-            </section>
-
-            <section className="panel activity-panel">
-              <div className="panel-head"><div><h2>Needs your attention</h2><p>Updates from the field</p></div><button onClick={() => notify("Activity center opened")}>View all <span>→</span></button></div>
-              <div className="activity-list">
-                {activity.map(item => <button key={item.title} className="activity-item" onClick={() => notify(item.title)}>
-                  <span className={`activity-icon ${item.tone}`}>{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time><i>›</i>
-                </button>)}
-              </div>
-            </section>
+        <section className="product-section" id="product">
+          <div className="section-kicker">THE BUILDWISE WORKSPACE</div><div className="section-heading"><h2>Less searching.<br/>More knowing.</h2><p>Construction information is spread across tools, projects, and teams. Buildwise is designed to turn that complexity into a direct path from question to answer.</p></div>
+          <div className="feature-grid">
+            <article className="feature-large"><span className="feature-number">01</span><div className="ask-card"><p>Ask Buildwise</p><div>Which RFIs could affect this week’s work?<button>↑</button></div><span><i>RFI 084</i><i>RFI 091</i><i>Look-ahead</i></span></div><h3>Ask about the work.</h3><p>Get concise answers grounded in the project information you’re permitted to access—with the source detail close at hand.</p></article>
+            <article><span className="feature-number">02</span><div className="pulse-visual"><i/><i/><i/><i/><b>!</b></div><h3>See what needs attention.</h3><p>Bring urgent RFIs, overdue reviews, field observations, and schedule pressure into one prioritized view.</p></article>
+            <article><span className="feature-number">03</span><div className="project-visual"><span><b>68%</b><i><em/></i></span><span><b>42%</b><i><em/></i></span><span><b>86%</b><i><em/></i></span></div><h3>Understand the portfolio.</h3><p>Move from company-level signals to the project record without losing context.</p></article>
           </div>
-        </div>
+        </section>
+
+        <section className="how-section" id="how">
+          <div><span className="section-kicker light">HOW IT WORKS</span><h2>Connected by design.<br/>Controlled by you.</h2></div>
+          <ol><li><b>01</b><span><strong>Connect your source systems</strong><small>Authorize the systems and companies you want Buildwise to work with.</small></span></li><li><b>02</b><span><strong>Keep permissions intact</strong><small>Buildwise is designed to respect the access granted by each connected account.</small></span></li><li><b>03</b><span><strong>Ask, review, and act</strong><small>Find the supporting project detail behind every answer before taking action.</small></span></li></ol>
+        </section>
+
+        <section className="company-section" id="company">
+          <div className="company-statement"><span className="section-kicker">THE COMPANY</span><h2>Software should make the job clearer—not add another place to look.</h2></div>
+          <div className="company-detail"><p>Buildwise is an independent construction technology company based in Colorado. We’re developing a secure, practical intelligence layer that helps project teams make better use of the information they already create.</p><p>The product is currently in early development. We’re starting with the workflows that cost construction teams the most time: finding current information, connecting related records, and understanding what requires attention.</p><div><span><b>2026</b><small>Founded</small></span><span><b>Colorado</b><small>Based</small></span><span><b>Private beta</b><small>Stage</small></span></div></div>
+        </section>
+
+        <section className="final-cta"><Mark/><h2>Build with clarity.</h2><p>See the first Buildwise workspace and follow the product as it develops.</p><a href="/dashboard">Open the workspace <span>→</span></a></section>
       </main>
-      {toast && <div className="toast" role="status">✓ {toast}</div>}
+
+      <footer className="company-footer"><a className="company-brand" href="#top"><Mark/><strong>BUILDWISE</strong></a><p>Independent construction technology, built in Colorado.</p><nav><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav><small>© 2026 Buildwise. Procore is a trademark of Procore Technologies, Inc. Buildwise is independent and is not endorsed by or affiliated with Procore.</small></footer>
     </div>
   );
 }

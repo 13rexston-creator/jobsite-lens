@@ -6,6 +6,30 @@ import { getAuthorizedPlanUser } from "../../plan-library";
 
 const noStoreHeaders = { "cache-control": "private, no-store" };
 
+function publicConnection(connection?: { createdAt: number; lastUsedAt: number | null } | null) {
+  if (!connection) {
+    return {
+      status: "not_configured" as const,
+      configured: false,
+      endpointReached: false,
+      connected: false,
+      createdAt: null,
+      lastUsedAt: null,
+    };
+  }
+  const endpointReached = Boolean(connection.lastUsedAt);
+  return {
+    status: endpointReached ? "endpoint_reached" as const : "setup_required" as const,
+    configured: true,
+    endpointReached,
+    // Kept for compatibility with older clients. Creating a token alone does
+    // not mean ChatGPT has connected to the private MCP endpoint.
+    connected: endpointReached,
+    createdAt: connection.createdAt,
+    lastUsedAt: connection.lastUsedAt,
+  };
+}
+
 export async function GET() {
   const user = await getAuthorizedPlanUser();
   if (!user) return Response.json({ error: "Unauthorized" }, { status: 401, headers: noStoreHeaders });
@@ -16,11 +40,7 @@ export async function GET() {
     eq(chatgptConnections.ownerUserId, user.userId),
     isNull(chatgptConnections.revokedAt),
   )).orderBy(desc(chatgptConnections.createdAt)).limit(1);
-  return Response.json({
-    connection: connection
-      ? { connected: true, createdAt: connection.createdAt, lastUsedAt: connection.lastUsedAt }
-      : { connected: false, createdAt: null, lastUsedAt: null },
-  }, { headers: noStoreHeaders });
+  return Response.json({ connection: publicConnection(connection) }, { headers: noStoreHeaders });
 }
 
 export async function POST(request: Request) {
@@ -42,9 +62,9 @@ export async function POST(request: Request) {
   });
   const mcpUrl = `${new URL(request.url).origin}/mcp/${encodeURIComponent(token)}`;
   return Response.json({
-    connection: { connected: true, createdAt: now, lastUsedAt: null },
+    connection: publicConnection({ createdAt: now, lastUsedAt: null }),
     mcpUrl,
-    warning: "This private connection URL is shown once. Do not share it.",
+    warning: "This private setup URL is shown once. Creating it does not connect ChatGPT; finish setup in ChatGPT Developer Mode and do not share it.",
   }, { status: 201, headers: noStoreHeaders });
 }
 
@@ -56,5 +76,5 @@ export async function DELETE(request: Request) {
     eq(chatgptConnections.ownerUserId, user.userId),
     isNull(chatgptConnections.revokedAt),
   ));
-  return Response.json({ connection: { connected: false, createdAt: null, lastUsedAt: null } }, { headers: noStoreHeaders });
+  return Response.json({ connection: publicConnection() }, { headers: noStoreHeaders });
 }

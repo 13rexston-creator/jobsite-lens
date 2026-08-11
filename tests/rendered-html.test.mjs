@@ -155,12 +155,13 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
   assert.match(takeoffRoute, /status: 402/);
   assert.match(takeoffRoute, /deferred: true/);
 
-  // ChatGPT is the primary conversation surface; the site issues a revocable,
-  // hashed private connection URL rather than persisting the plaintext token.
-  assert.match(library, /PRIMARY PLAN Q&amp;A · OWNER PREVIEW/);
-  assert.match(library, /<h3>Ask ChatGPT<\/h3>/);
-  assert.match(library, /Connect ChatGPT/);
+  // The optional ChatGPT owner preview issues a revocable, hashed private
+  // setup URL and does not claim connection before the endpoint is reached.
+  assert.match(library, /OPTIONAL CHATGPT CONNECTION · OWNER PREVIEW/);
+  assert.match(library, /<h3>Use Jobsite Lens in ChatGPT<\/h3>/);
+  assert.match(library, /Create setup URL/);
   assert.match(library, /ChatGPT Developer Mode/);
+  assert.match(library, /add Jobsite Lens from the Tools menu/);
   assert.match(library, /\/api\/chatgpt-connection/);
   assert.match(library, /\/api\/plan-library\/pages\/register/);
   assert.match(library, /\/api\/plan-library\/takeoff/);
@@ -169,6 +170,8 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
   assert.match(chatGPTConnectionRoute, /hashChatGPTConnectionToken\(token\)/);
   assert.match(chatGPTConnectionRoute, /isSameOriginWrite\(request\)/);
   assert.match(chatGPTConnectionRoute, /revokedAt/);
+  assert.match(chatGPTConnectionRoute, /status: endpointReached \? "endpoint_reached" as const : "setup_required" as const/);
+  assert.match(chatGPTConnectionRoute, /connected: endpointReached/);
   assert.match(chatGPTConnection, /crypto\.subtle\.digest\("SHA-256"/);
   assert.match(chatGPTConnection, /\^jlmcp_\[A-Za-z0-9_-\]\{43\}\$/);
   assert.doesNotMatch(chatGPTConnectionRoute, /tokenHash: token[,}]/);

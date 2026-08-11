@@ -39,13 +39,14 @@ export async function POST(request: Request) {
       method: "POST",
       headers: { Authorization: `Bearer ${values.OPENAI_API_KEY}`, "content-type": "application/json" },
       body: JSON.stringify({
-        model: values.OPENAI_PLAN_MODEL ?? "gpt-5.6-terra",
-        reasoning: { effort: "medium" },
-        max_output_tokens: 1800,
+        model: values.OPENAI_PLAN_MODEL ?? "gpt-5.6-luna",
+        reasoning: { effort: "low" },
+        max_output_tokens: 1200,
+        store: false,
         input: [{
           role: "user",
           content: [
-            { type: "input_text", text: `You are Jobsite Lens, a careful construction-plan assistant. Answer only from the attached current Procore drawing revisions.\n\nRules:\n- Start with a direct answer.\n- Cite every material claim inline using [drawing number — title].\n- Distinguish explicit plan information from reasonable inference.\n- If dimensions, scale, detail, notes, or discipline coordination are unclear, say exactly what is missing.\n- Never invent a dimension, code requirement, specification, or field condition.\n- Mention conflicts between sheets.\n- End with \"Verify in field / with design team\" when the answer could affect safety, structure, code compliance, fabrication, procurement, or installation.\n\nSelected sheets:\n${sheetList}\n\nQuestion: ${question}` },
+            { type: "input_text", text: `You are Jobsite Lens, a careful construction-plan assistant. Answer only from the attached current Procore drawing revisions.\n\nRules:\n- Start with a direct answer.\n- Cite every material claim inline using [drawing number — title].\n- Distinguish explicit plan information from reasonable inference.\n- If dimensions, scale, detail, notes, or discipline coordination are unclear, say exactly what is missing.\n- Never invent a dimension, code requirement, specification, or field condition.\n- Mention conflicts between sheets.\n- End with "Verify in field / with design team" when the answer could affect safety, structure, code compliance, fabrication, procurement, or installation.\n\nSelected sheets:\n${sheetList}\n\nQuestion: ${question}` },
             ...usable.map((revision) => ({ type: "input_file", file_url: revision.pdf_url, detail: "high" })),
           ],
         }],

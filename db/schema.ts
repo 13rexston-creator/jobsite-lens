@@ -47,3 +47,39 @@ export const planFiles = sqliteTable("plan_files", {
   index("idx_plan_files_project_created").on(table.projectId, table.createdAt),
   index("idx_plan_files_owner_status").on(table.ownerUserId, table.status),
 ]);
+
+export const planPages = sqliteTable("plan_pages", {
+  id: text("id").primaryKey(),
+  fileId: text("file_id").notNull().references(() => planFiles.id, { onDelete: "cascade" }),
+  projectId: text("project_id").notNull().references(() => planProjects.id, { onDelete: "cascade" }),
+  ownerUserId: text("owner_user_id").notNull(),
+  pageNumber: integer("page_number").notNull(),
+  pageCount: integer("page_count").notNull(),
+  storageKey: text("storage_key"),
+  imageSize: integer("image_size"),
+  width: integer("width"),
+  height: integer("height"),
+  extractedText: text("extracted_text").notNull().default(""),
+  isCandidate: integer("is_candidate", { mode: "boolean" }).notNull().default(false),
+  analysisStatus: text("analysis_status").notNull().default("pending"),
+  analysisJson: text("analysis_json"),
+  analysisError: text("analysis_error"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("idx_plan_pages_file_page").on(table.fileId, table.pageNumber),
+  uniqueIndex("idx_plan_pages_storage_key").on(table.storageKey),
+  index("idx_plan_pages_project_candidate_status").on(table.projectId, table.isCandidate, table.analysisStatus),
+]);
+
+export const chatgptConnections = sqliteTable("chatgpt_connections", {
+  id: text("id").primaryKey(),
+  ownerUserId: text("owner_user_id").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  createdAt: integer("created_at").notNull(),
+  lastUsedAt: integer("last_used_at"),
+  revokedAt: integer("revoked_at"),
+}, (table) => [
+  uniqueIndex("idx_chatgpt_connections_token_hash").on(table.tokenHash),
+  index("idx_chatgpt_connections_owner_revoked").on(table.ownerUserId, table.revokedAt),
+]);

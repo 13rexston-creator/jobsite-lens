@@ -1,7 +1,8 @@
-import { and, desc, eq, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, max, sql } from "drizzle-orm";
 import { getDb } from "../../../../db";
-import { planFiles, planProjects } from "../../../../db/schema";
+import { planFiles, planPages, planProjects } from "../../../../db/schema";
 import { ensureVectorStore, getAuthorizedPlanUser, getOwnedPlanProject, openAIRequest, planRuntime, requirePlanStorage, safePlanFileName, uploadStoredPlanToOpenAI } from "../../../plan-library";
+import { isVisualOnlyStorageKey } from "../../../plan-pages";
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
 const D1_ID_CHUNK = 80;
@@ -77,9 +78,26 @@ export async function GET(request: Request) {
     status: planFiles.status,
     error: planFiles.error,
     createdAt: planFiles.createdAt,
+    storageKey: planFiles.storageKey,
   }).from(planFiles).where(and(eq(planFiles.projectId, projectId), eq(planFiles.ownerUserId, user.userId)))
     .orderBy(desc(planFiles.createdAt));
-  return Response.json({ files });
+  const pageStats = await getDb().select({
+    fileId: planPages.fileId,
+    preparedPageCount: sql<number>`sum(case when ${planPages.analysisStatus} = 'skipped' or ${planPages.storageKey} is not null then 1 else 0 end)`,
+    pageCount: max(planPages.pageCount),
+  }).from(planPages).where(and(
+    eq(planPages.projectId, projectId),
+    eq(planPages.ownerUserId, user.userId),
+  )).groupBy(planPages.fileId);
+  const statsByFile = new Map(pageStats.map((item) => [item.fileId, item]));
+  return Response.json({
+    files: files.map(({ storageKey, ...file }) => ({
+      ...file,
+      originalStored: !isVisualOnlyStorageKey(storageKey),
+      pageCount: statsByFile.get(file.id)?.pageCount ?? undefined,
+      preparedPageCount: statsByFile.get(file.id)?.preparedPageCount ?? 0,
+    })),
+  });
 }
 
 export async function POST(request: Request) {

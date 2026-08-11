@@ -193,7 +193,7 @@ export default function Dashboard() {
 
           <section className="plans-assistant" id="procore-drawings" aria-labelledby="plans-title">
             <div className="plans-heading">
-              <div><p>LIVE PROCORE DRAWINGS</p><h2 id="plans-title">Ask selected Procore sheets</h2><span>Use this when a production Procore connection is available. Uploaded project libraries work independently above.</span></div>
+              <div><p>OPTIONAL DIRECT SHEET CHECK</p><h2 id="plans-title">Check selected Procore sheets</h2><span>This secondary tool sends only the selected sheets for direct analysis and uses Jobsite Lens API credits. Ask ChatGPT above for routine project questions.</span></div>
               <div className="plans-badge"><i /> {procore.connected ? "Live Procore access" : "Connect Procore to begin"}</div>
             </div>
             {!procore.connected && !procore.loading ? <div className="plans-empty"><strong>Your drawings are one connection away.</strong><span>Connect Procore above, then choose a project and its current plan sheets.</span></div> : (
@@ -211,9 +211,9 @@ export default function Dashboard() {
                   </div>
                 </div>
                 <form className="plans-chat" onSubmit={askPlans}>
-                  <div className="plans-prompt-label"><label htmlFor="plan-question">Question about selected sheets</label><small>AI can miss details—verify critical work.</small></div>
+                  <div className="plans-prompt-label"><label htmlFor="plan-question">Question about selected sheets</label><small>Uses API credits · verify critical work.</small></div>
                   <textarea id="plan-question" value={planQuestion} onChange={(event) => setPlanQuestion(event.target.value)} placeholder="Example: What is the wall type between rooms 214 and 216, and which detail shows the head condition?" rows={4} />
-                  <button type="submit" disabled={planBusy || !selectedDrawings.length || !planQuestion.trim()}>{planBusy ? "Reading the plans…" : "Ask Jobsite Lens"}<span>→</span></button>
+                  <button type="submit" disabled={planBusy || !selectedDrawings.length || !planQuestion.trim()}>{planBusy ? "Reading the plans…" : "Run direct sheet check"}<span>→</span></button>
                   {planError && <div className="plan-error" role="alert">{planError}</div>}
                   {planAnswer ? <div className="plan-answer" aria-live="polite"><div><i>JL</i><strong>Plan answer</strong></div><p>{planAnswer}</p></div> : <div className="plan-guidance"><strong>Good questions to ask</strong><button type="button" onClick={() => setPlanQuestion("What dimensions and notes control this installation?")}>What dimensions control this installation?</button><button type="button" onClick={() => setPlanQuestion("Do these sheets show any coordination conflicts or missing information?")}>Are there coordination conflicts?</button><button type="button" onClick={() => setPlanQuestion("Summarize the scope shown on these sheets for the field team.")}>Summarize this scope for the field.</button></div>}
                 </form>

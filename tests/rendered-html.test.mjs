@@ -24,13 +24,34 @@ test("server-renders the Jobsite Lens product site", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
 });
 
-test("includes a durable, provider-independent plan library", async () => {
-  const [library, projectsRoute, filesRoute, retryRoute, askRoute, planLibrary, hosting, schema] = await Promise.all([
+test("includes a durable, low-cost plan library with cached visual takeoffs", async () => {
+  const [
+    library,
+    projectsRoute,
+    filesRoute,
+    retryRoute,
+    askRoute,
+    takeoffRoute,
+    pageRegisterRoute,
+    filePagesRoute,
+    planPages,
+    chatGPTConnectionRoute,
+    chatGPTConnection,
+    planLibrary,
+    hosting,
+    schema,
+  ] = await Promise.all([
     readFile(new URL("../app/dashboard/PlanLibrary.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/projects/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/files/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/files/[fileId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/ask/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/plan-library/takeoff/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/plan-library/pages/register/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/plan-library/files/[fileId]/pages/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/plan-pages.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/chatgpt-connection/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/chatgpt-connection.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/plan-library.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
@@ -58,27 +79,104 @@ test("includes a durable, provider-independent plan library", async () => {
   assert.match(filesRoute, /await recoverInterruptedUploads\(project\.id, user\.userId\)/);
   assert.match(retryRoute, /const \[claimed\] = await db\.update\(planFiles\)\.set\(\{[\s\S]*?status: "uploading"[\s\S]*?\}\)\.where\(and\(\s*eq\(planFiles\.id, file\.id\),\s*eq\(planFiles\.ownerUserId, user\.userId\),\s*inArray\(planFiles\.status, \["stored", "failed"\]\),\s*\)\)\.returning\(\{ id: planFiles\.id \}\)/);
   assert.match(retryRoute, /if \(!claimed\)/);
+
+  // General questions make one low-reasoning Luna request over the existing
+  // vector store. The route must never resend whole PDFs for every question.
+  assert.match(askRoute, /const model = planRuntime\(\)\.OPENAI_PLAN_MODEL \?\? "gpt-5\.6-luna"/);
+  assert.equal((askRoute.match(/openAIRequest\("\/responses"/g) ?? []).length, 1);
+  assert.equal((askRoute.match(/type: "file_search"/g) ?? []).length, 1);
   assert.match(askRoute, /type: "file_search"/);
   assert.match(askRoute, /vector_store_ids/);
-  assert.match(askRoute, /type: "input_file"/);
-  assert.match(askRoute, /detail: "high"/);
-  assert.match(askRoute, /suspected plan errors/);
+  assert.match(askRoute, /max_num_results: 10/);
+  assert.match(askRoute, /reasoning: \{ effort: "low" \}/);
+  assert.match(askRoute, /costProfile: "single_search"/);
+  assert.doesNotMatch(askRoute, /type: "input_file"/);
+  assert.doesNotMatch(askRoute, /detail: "high"/);
   assert.match(askRoute, /const safetyIdentifier = await planSafetyIdentifier\(user\.userId\)/);
-  assert.equal((askRoute.match(/safety_identifier: safetyIdentifier/g) ?? []).length, 2);
+  assert.equal((askRoute.match(/safety_identifier: safetyIdentifier/g) ?? []).length, 1);
   assert.doesNotMatch(askRoute, /safety_identifier: `jobsite-lens-\$\{user\.userId\}`/);
   assert.match(planLibrary, /crypto\.subtle\.digest\("SHA-256"/);
   assert.match(planLibrary, /return `jobsite-lens-\$\{hex\.slice\(0, 48\)\}`/);
+
+  // Fixture questions are answered from the saved page takeoff before the
+  // general OpenAI request, so repeat counts consume no additional API call.
+  const fixtureBranchStart = askRoute.indexOf("if (QUANTITY_QUESTION.test(question)");
+  const generalSearchStart = askRoute.indexOf("if (!project.vectorStoreId)");
+  assert.ok(fixtureBranchStart >= 0 && generalSearchStart > fixtureBranchStart);
+  assert.doesNotMatch(askRoute.slice(fixtureBranchStart, generalSearchStart), /openAIRequest/);
+  assert.match(askRoute, /getFixtureTakeoffState\(user\.userId, project\)/);
+  assert.match(askRoute, /kind: "fixture_takeoff_cached"/);
+  assert.match(askRoute, /costProfile: "cached_no_api"/);
+  assert.match(askRoute, /costProfile: "no_api"/);
   assert.match(askRoute, /visualVerification/);
   assert.match(askRoute, /"checked"/);
   assert.match(askRoute, /"partial"/);
-  assert.match(askRoute, /"size_limited"/);
-  assert.match(askRoute, /"unavailable"/);
-  assert.match(askRoute, /Response\.json\(\{ answer, sources, visualVerification \}\)/);
+
+  // Large local packages register without storing the original, then upload
+  // only bounded candidate-page JPEGs and extracted text for resumable analysis.
+  assert.match(pageRegisterRoute, /const MAX_LOCAL_PACKAGE_SIZE = 10 \* 1024 \* 1024 \* 1024/);
+  assert.match(pageRegisterRoute, /privateFingerprint\(user\.userId, project\.id/);
+  assert.match(pageRegisterRoute, /visualOnlyStorageKey\(id\)/);
+  assert.match(pageRegisterRoute, /originalStored: false/);
+  assert.match(filePagesRoute, /isCandidatePageText\(extractedText\)/);
+  assert.match(filePagesRoute, /MAX_PAGE_IMAGE_SIZE/);
+  assert.match(filePagesRoute, /bucket\.put\(storageKey, image\.stream\(\)/);
+  assert.match(filePagesRoute, /customMetadata: \{ ownerUserId: user\.userId/);
+  assert.match(filePagesRoute, /analysisStatus/);
+  assert.match(filePagesRoute, /eq\(planPages\.ownerUserId, user\.userId\)/);
+  assert.match(planPages, /export const MAX_PAGE_IMAGE_SIZE = 5 \* 1024 \* 1024/);
+  assert.match(planPages, /Pages with no extractable text must be visually triaged/);
+  assert.match(filesRoute, /preparedPageCount: sql<number>`sum\(case when \$\{planPages\.analysisStatus\} = 'skipped' or \$\{planPages\.storageKey\} is not null then 1 else 0 end\)`/);
+  assert.match(library, /const MAX_TAKEOFF_PAGES_PER_RUN = 5/);
+  assert.match(library, /while \(processedPages < MAX_TAKEOFF_PAGES_PER_RUN\)/);
+  assert.match(library, /Each click analyzes up to \{MAX_TAKEOFF_PAGES_PER_RUN\}/);
+  assert.match(library, /selectedProjectIdRef\.current !== projectId/);
+  assert.match(library, /projectSelectionLocked/);
+  assert.match(library, /filePagesArePrepared\(file\)/);
+  assert.match(library, /\/api\/plan-library\/files\/\$\{encodeURIComponent\(fileId\)\}\/pages/);
+  assert.match(library, /slice\(0, 12\)/);
+
+  // Each takeoff request claims and analyzes one saved page. Only this bounded
+  // page-image path uses high-detail vision; deterministic cached aggregation
+  // keeps validation sheets and duplicate disciplines out of project totals.
+  assert.match(takeoffRoute, /export async function getFixtureTakeoffState/);
+  assert.match(takeoffRoute, /OPENAI_TAKEOFF_MODEL \?\? "gpt-5\.6-luna"/);
+  assert.equal((takeoffRoute.match(/openAIRequest\("\/responses"/g) ?? []).length, 1);
+  assert.equal((takeoffRoute.match(/type: "input_image"/g) ?? []).length, 1);
+  assert.match(takeoffRoute, /detail: "high"/);
+  assert.match(takeoffRoute, /type: "json_schema"/);
+  assert.match(takeoffRoute, /strict: true/);
+  assert.match(takeoffRoute, /eq\(planPages\.isCandidate, true\)/);
+  assert.match(takeoffRoute, /inArray\(planPages\.analysisStatus, \["pending", "failed"\]\)/);
+  assert.match(takeoffRoute, /claimNextPage[\s\S]*?\.limit\(1\)/);
+  assert.match(takeoffRoute, /visibleAndEstimatedRemainSeparate: true/);
+  assert.match(takeoffRoute, /validationSheetsExcludedFromTotals: true/);
+  assert.match(takeoffRoute, /onePrimarySheetPerScope: true/);
+  assert.match(takeoffRoute, /status: 402/);
+  assert.match(takeoffRoute, /deferred: true/);
+
+  // ChatGPT is the primary conversation surface; the site issues a revocable,
+  // hashed private connection URL rather than persisting the plaintext token.
+  assert.match(library, /PRIMARY PLAN Q&amp;A · OWNER PREVIEW/);
+  assert.match(library, /<h3>Ask ChatGPT<\/h3>/);
+  assert.match(library, /Connect ChatGPT/);
+  assert.match(library, /ChatGPT Developer Mode/);
+  assert.match(library, /\/api\/chatgpt-connection/);
+  assert.match(library, /\/api\/plan-library\/pages\/register/);
+  assert.match(library, /\/api\/plan-library\/takeoff/);
+  assert.match(library, /Prepared sheets and takeoff results are cached/);
+  assert.match(chatGPTConnectionRoute, /mcpUrl/);
+  assert.match(chatGPTConnectionRoute, /hashChatGPTConnectionToken\(token\)/);
+  assert.match(chatGPTConnectionRoute, /isSameOriginWrite\(request\)/);
+  assert.match(chatGPTConnectionRoute, /revokedAt/);
+  assert.match(chatGPTConnection, /crypto\.subtle\.digest\("SHA-256"/);
+  assert.match(chatGPTConnection, /\^jlmcp_\[A-Za-z0-9_-\]\{43\}\$/);
+  assert.doesNotMatch(chatGPTConnectionRoute, /tokenHash: token[,}]/);
+
   assert.match(library, /visualVerification/);
-  assert.match(library, /visualVerification\.status !== "checked"/);
-  assert.match(library, /not visually inspected/i);
-  assert.match(library, /48 MB/);
   assert.match(hosting, /"r2": "PLANS"/);
   assert.match(schema, /plan_projects/);
   assert.match(schema, /plan_files/);
+  assert.match(schema, /plan_pages/);
+  assert.match(schema, /chatgpt_connections/);
 });

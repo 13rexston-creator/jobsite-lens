@@ -294,7 +294,7 @@ function verificationNote(verification: VisualVerification | null) {
   if (verification.status === "partial") return "Visual verification was partial. Prepare the relevant plan pages so fixture takeoffs can use cached sheet images.";
   if (verification.status === "size_limited") return "This answer used searchable plan text. Prepare the relevant plan pages for cached visual takeoffs.";
   if (verification.status === "unavailable") return "This answer used searchable plan text, but visual sheet verification was temporarily unavailable. Verify dimensions, symbols, and geometry against the drawings.";
-  return "This answer used searchable plan text. Visual sheet verification did not run, so verify dimensions, symbols, and geometry against the drawings.";
+  return "This answer used searchable plan text. Any sheet previews are source references, not model-verified markups; verify dimensions, symbols, and geometry against the drawings.";
 }
 
 export default function PlanLibrary() {
@@ -500,9 +500,9 @@ export default function PlanLibrary() {
     if (!connection) {
       setConnectionMessage("Could not check the private ChatGPT endpoint. Try again.");
     } else if (connection.endpointReached || connection.lastUsedAt) {
-      setConnectionMessage("ChatGPT has reached the Jobsite Lens endpoint. In a new chat, add Jobsite Lens from the Tools menu before asking plan questions.");
+      setConnectionMessage("The private endpoint was reached. This does not verify that Jobsite Lens is installed or enabled in ChatGPT; confirm it on the Plugins page and add it from the Tools menu in a new chat.");
     } else {
-      setConnectionMessage("ChatGPT has not reached this setup URL yet. Finish the Plugins setup steps below, then check again.");
+      setConnectionMessage("This setup URL has not recorded a request yet. Finish the Plugins setup steps below, then check again.");
     }
     setChatGPTBusy(false);
   }
@@ -1018,9 +1018,9 @@ export default function PlanLibrary() {
           <section className={`chatgpt-primary ${chatGPTEndpointReached ? "connected" : ""}`}>
             <div className="chatgpt-primary-head"><span className="chatgpt-mark">✦</span><div><small>OPTIONAL CHATGPT CONNECTION · OWNER PREVIEW</small><h3>Use Jobsite Lens in ChatGPT</h3></div><em>{chatGPTEndpointReached ? "Endpoint reached" : chatGPTConfigured ? "Setup required" : "Optional"}</em></div>
             <p>{chatGPTEndpointReached
-              ? "ChatGPT has reached this private Jobsite Lens endpoint. Start a new conversation and add Jobsite Lens from the Tools menu before asking about the plans."
+              ? "The private endpoint was reached. That confirms only that the setup URL responded, not that Jobsite Lens is installed or enabled in ChatGPT. Check Plugins, then add Jobsite Lens from the Tools menu in a new conversation."
               : chatGPTConfigured
-                ? "A private access URL exists, but ChatGPT has not reached it. Create a replacement URL if needed, then finish the Plugins setup steps below."
+                ? "A private access URL exists, but the endpoint has not recorded a request. Create a replacement URL if needed, then finish the Plugins setup steps below."
                 : "Create a private setup URL to use this plan library from your own ChatGPT account. This is an optional owner preview until OAuth and directory review are complete."}</p>
             <div className="chatgpt-primary-actions">
               {chatGPTEndpointReached
@@ -1028,7 +1028,7 @@ export default function PlanLibrary() {
                 : <button type="button" disabled={chatGPTBusy} onClick={connectChatGPT}>{chatGPTBusy ? "Creating setup URL…" : chatGPTConfigured ? "Create replacement setup URL" : "Create setup URL"}</button>}
               {chatGPTConfigured && !chatGPTEndpointReached && <button className="secondary" type="button" disabled={chatGPTBusy} onClick={checkChatGPTConnection}>{chatGPTBusy ? "Checking…" : "Check connection"}</button>}
             </div>
-            {chatGPTConfigured && <small className="chatgpt-connection-meta">Private owner preview{chatGPTConnection?.lastUsedAt ? ` · endpoint last reached ${new Date(chatGPTConnection.lastUsedAt).toLocaleDateString()}` : " · ChatGPT has not reached the endpoint"}</small>}
+            {chatGPTConfigured && <small className="chatgpt-connection-meta">Private owner preview{chatGPTConnection?.lastUsedAt ? ` · endpoint last reached ${new Date(chatGPTConnection.lastUsedAt).toLocaleDateString()}` : " · endpoint has not recorded a request"}</small>}
           </section>
 
           {chatGPTSetupUrl && <section className="chatgpt-setup" aria-labelledby="chatgpt-setup-title">

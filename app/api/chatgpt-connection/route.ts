@@ -22,9 +22,10 @@ function publicConnection(connection?: { createdAt: number; lastUsedAt: number |
     status: endpointReached ? "endpoint_reached" as const : "setup_required" as const,
     configured: true,
     endpointReached,
-    // Kept for compatibility with older clients. Creating a token alone does
-    // not mean ChatGPT has connected to the private MCP endpoint.
-    connected: endpointReached,
+    // Kept for compatibility with older clients, but deliberately never
+    // asserted: a token-bearing request does not prove ChatGPT installed or
+    // enabled this private endpoint.
+    connected: false,
     createdAt: connection.createdAt,
     lastUsedAt: connection.lastUsedAt,
   };

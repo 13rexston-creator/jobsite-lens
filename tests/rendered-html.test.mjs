@@ -100,7 +100,7 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
 
   // Fixture questions are answered from the saved page takeoff before the
   // general OpenAI request, so repeat counts consume no additional API call.
-  const fixtureBranchStart = askRoute.indexOf("if (QUANTITY_QUESTION.test(question)");
+  const fixtureBranchStart = askRoute.indexOf("if (isFixtureTakeoffIntent(question, history))");
   const generalSearchStart = askRoute.indexOf("if (!project.vectorStoreId)");
   assert.ok(fixtureBranchStart >= 0 && generalSearchStart > fixtureBranchStart);
   assert.doesNotMatch(askRoute.slice(fixtureBranchStart, generalSearchStart), /openAIRequest/);
@@ -162,6 +162,8 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
   assert.match(library, /Create setup URL/);
   assert.match(library, /ChatGPT Developer Mode/);
   assert.match(library, /add Jobsite Lens from the Tools menu/);
+  assert.match(library, /That confirms only that the setup URL responded, not that Jobsite Lens is installed or enabled in ChatGPT/);
+  assert.doesNotMatch(library, /ChatGPT has (?:not )?reached/);
   assert.match(library, /\/api\/chatgpt-connection/);
   assert.match(library, /\/api\/plan-library\/pages\/register/);
   assert.match(library, /\/api\/plan-library\/takeoff/);
@@ -171,7 +173,8 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
   assert.match(chatGPTConnectionRoute, /isSameOriginWrite\(request\)/);
   assert.match(chatGPTConnectionRoute, /revokedAt/);
   assert.match(chatGPTConnectionRoute, /status: endpointReached \? "endpoint_reached" as const : "setup_required" as const/);
-  assert.match(chatGPTConnectionRoute, /connected: endpointReached/);
+  assert.match(chatGPTConnectionRoute, /endpointReached,[\s\S]{0,260}connected: false/);
+  assert.doesNotMatch(chatGPTConnectionRoute, /connected:\s*(?:endpointReached|true)/);
   assert.match(chatGPTConnection, /crypto\.subtle\.digest\("SHA-256"/);
   assert.match(chatGPTConnection, /\^jlmcp_\[A-Za-z0-9_-\]\{43\}\$/);
   assert.doesNotMatch(chatGPTConnectionRoute, /tokenHash: token[,}]/);

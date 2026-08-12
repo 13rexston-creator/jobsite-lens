@@ -709,7 +709,10 @@ export async function POST(request: Request) {
       body: JSON.stringify({
         model: runtime.OPENAI_TAKEOFF_MODEL ?? "gpt-5.6-luna",
         reasoning: { effort: "low" },
-        max_output_tokens: 3000,
+        // A dense floor plan can legitimately produce hundreds of compact
+        // fixture records. This is a one-time ingestion call; truncating its
+        // JSON loses the reusable cache and forces a paid retry.
+        max_output_tokens: 12_000,
         safety_identifier: await planSafetyIdentifier(user.userId),
         store: false,
         input: [{

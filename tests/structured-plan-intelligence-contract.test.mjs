@@ -13,6 +13,7 @@ test("fixture analysis persists reusable location and tub orientation evidence",
   assert.match(migration, /CREATE TABLE `plan_fixture_intelligence`/);
   assert.match(takeoff, /valve\/drain end/);
   assert.match(takeoff, /replacePageFixtureIntelligence/);
+  assert.match(takeoff, /max_output_tokens: 12_000/);
   assert.match(intelligence, /LEFT_HAND/);
   assert.match(intelligence, /RIGHT_HAND/);
   assert.match(intelligence, /UNKNOWN/);

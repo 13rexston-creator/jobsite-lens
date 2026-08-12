@@ -330,30 +330,63 @@ export default function PlanLibrary() {
     setPlanChatError("");
     const assistantId = crypto.randomUUID();
     try {
-      const response = await fetch("/api/plan-library/chat", {
+      const sendQuestion = async (targetAssistantId: string) => {
+        const response = await fetch("/api/plan-library/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ projectId, message, history }),
       });
-      if (!response.ok || !response.body) {
-        const data = await response.json().catch(() => ({})) as { error?: string };
-        throw new Error(data.error || "The plan assistant could not answer this question.");
-      }
-      setPlanChat((current) => [...current, { id: assistantId, role: "assistant", content: "" }]);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const item = JSON.parse(line) as { type?: string; text?: string };
-          if (item.type === "delta" && item.text) setPlanChat((current) => current.map((entry) => entry.id === assistantId ? { ...entry, content: entry.content + item.text } : entry));
+        if (!response.ok || !response.body) {
+          const data = await response.json().catch(() => ({})) as { error?: string };
+          throw new Error(data.error || "The plan assistant could not answer this question.");
         }
-        if (done) break;
+        setPlanChat((current) => [...current, { id: targetAssistantId, role: "assistant", content: "" }]);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let completion: { analysisRequired?: boolean; analysisIntent?: string; analysisVersion?: string } = {};
+        while (true) {
+          const { value, done } = await reader.read();
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const item = JSON.parse(line) as { type?: string; text?: string; analysisRequired?: boolean; analysisIntent?: string; analysisVersion?: string };
+            if (item.type === "delta" && item.text) setPlanChat((current) => current.map((entry) => entry.id === targetAssistantId ? { ...entry, content: entry.content + item.text } : entry));
+            if (item.type === "done") completion = item;
+          }
+          if (done) break;
+        }
+        return completion;
+      };
+
+      const completion = await sendQuestion(assistantId);
+      if (completion.analysisRequired && selectedProjectIdRef.current === projectId) {
+        let processed = 0;
+        const maximumAutomaticPages = completion.analysisIntent === "tub_handedness" ? 30 : 15;
+        while (processed < maximumAutomaticPages && selectedProjectIdRef.current === projectId) {
+          setPlanChat((current) => current.map((entry) => entry.id === assistantId ? {
+            ...entry, content: `I'm analyzing the relevant drawing layouts now. ${processed ? `${processed} sheets completed so far.` : "This first takeoff may take a little longer."}`,
+          } : entry));
+          const analysisResponse = await fetch("/api/plan-library/takeoff", {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ projectId, priorityOnly: true, analysisIntent: completion.analysisIntent, requiredVersion: completion.analysisVersion }),
+          });
+          const data = await analysisResponse.json() as TakeoffPayload;
+          if (!analysisResponse.ok) throw new Error(data.error || "The drawing analysis paused before it could finish.");
+          if (!data.processed) break;
+          processed += 1;
+        }
+        await loadTakeoff(projectId, true);
+        const finalAssistantId = crypto.randomUUID();
+        const finalCompletion = await sendQuestion(finalAssistantId);
+        if (finalCompletion.analysisRequired) {
+          setPlanChat((current) => current.map((entry) => entry.id === finalAssistantId ? {
+            ...entry,
+            content: "I saved the completed visual work, but the relevant prepared sheets are not sufficient for a reliable final count yet. Prepare the missing plan images and ask again; the completed work will resume rather than restart.",
+          } : entry));
+        }
       }
     } catch (cause) {
       setPlanChat((current) => current.filter((entry) => entry.id !== assistantId));

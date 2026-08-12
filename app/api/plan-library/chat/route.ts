@@ -1,9 +1,11 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt, isNotNull, lte, ne, sql } from "drizzle-orm";
 import { getDb } from "../../../../db";
-import { chatgptConnections } from "../../../../db/schema";
+import { chatgptConnections, planFiles, planPages } from "../../../../db/schema";
 import { createChatGPTConnectionToken, hashChatGPTConnectionToken, isSameOriginWrite } from "../../../chatgpt-connection";
 import { getAuthorizedPlanUser, getOwnedPlanProject, openAIRequest, outputText, planRuntime, planSafetyIdentifier } from "../../../plan-library";
 import { parseStructuredFixtureQuestion, queryFixtureIntelligence } from "../../../plan-intelligence";
+import { fixturePagePrioritySql } from "../../../fixture-page-priority";
+import { MAX_PAGE_IMAGE_SIZE } from "../../../plan-pages";
 
 type HistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -62,17 +64,36 @@ export async function POST(request: Request) {
   const structuredFilters = parseStructuredFixtureQuestion(message);
   if (structuredFilters) {
     const intelligence = await queryFixtureIntelligence(user.userId, project.id, structuredFilters);
+    const analysisVersion = planRuntime().PLAN_ANALYSIS_VERSION?.trim() || "vlm-v1";
+    const tubIntent = structuredFilters.fixtureType === "bathtub";
+    const [coverage] = await getDb().select({ count: sql<number>`count(*)` }).from(planPages)
+      .innerJoin(planFiles, eq(planFiles.id, planPages.fileId)).where(and(
+        eq(planPages.ownerUserId, user.userId), eq(planPages.projectId, project.id),
+        eq(planFiles.ownerUserId, user.userId), eq(planFiles.projectId, project.id),
+        eq(planPages.isCandidate, true), isNotNull(planPages.storageKey), gt(planPages.imageSize, 0), lte(planPages.imageSize, MAX_PAGE_IMAGE_SIZE),
+        sql`${fixturePagePrioritySql} <= 1`, ne(planPages.analysisVersion, analysisVersion),
+        tubIntent ? sql`(
+          instr(lower(${planPages.extractedText}), 'tub') > 0 or instr(lower(${planPages.extractedText}), 'unit plan') > 0 or
+          instr(lower(${planPages.extractedText}), 'unit matrix') > 0 or instr(lower(${planPages.extractedText}), 'floor plan') > 0 or
+          instr(lower(${planPages.extractedText}), 'pl401') > 0 or instr(lower(${planPages.extractedText}), 'pl402') > 0
+        )` : undefined,
+      ));
+    const analysisRequired = Number(coverage?.count ?? 0) > 0 || !intelligence.records.length;
     const requested = structuredFilters.orientation ? intelligence.counts[structuredFilters.orientation] : intelligence.counts.total;
     const sourceLines = intelligence.sources.map((source) => {
       const label = [source.sheetNumber, source.sheetTitle].filter(Boolean).join(" — ") || `${source.fileName}, page ${source.pageNumber}`;
       const url = `/api/plan-library/files/${encodeURIComponent(source.fileId)}/pages/${encodeURIComponent(source.pageId)}`;
       return `- [${label}](${url})`;
     });
-    const coverage = intelligence.records.length
+    const coverageText = !analysisRequired && intelligence.records.length
       ? `Stored plan intelligence reports **${requested}** matching fixture${requested === 1 ? "" : "s"}. Orientation totals: **${intelligence.counts.LEFT_HAND} left-hand**, **${intelligence.counts.RIGHT_HAND} right-hand**, and **${intelligence.counts.UNKNOWN} unknown**.`
-      : "No completed structured fixture records match this question yet. The relevant prepared drawings still need one-time visual analysis; I will not estimate the quantity from OCR or load the entire project into the model.";
-    const answer = `${coverage}${sourceLines.length ? `\n\nSources:\n${sourceLines.join("\n")}` : ""}\n\nTub handing is counted only when the valve/drain end establishes left or right while facing the tub apron; ambiguous tubs remain unknown.`;
-    return streamAnswer(answer, { projectId: project.id, toolPath: "structured_plan_intelligence", usage: { inputTokens: 0, outputTokens: 0 } });
+      : "I'm analyzing the relevant drawing layouts now. This first takeoff may take a little longer because these drawings have not been visually analyzed yet.";
+    const answer = `${coverageText}${!analysisRequired && sourceLines.length ? `\n\nSources:\n${sourceLines.join("\n")}` : ""}\n\nTub handing is counted only when the valve/drain end establishes left or right while facing the tub apron; ambiguous tubs remain unknown.`;
+    return streamAnswer(answer, { projectId: project.id, toolPath: "structured_plan_intelligence", usage: { inputTokens: 0, outputTokens: 0 },
+      analysisRequired,
+      analysisIntent: structuredFilters.fixtureType === "bathtub" ? "tub_handedness" : "fixture_takeoff",
+      analysisVersion,
+    });
   }
 
   const token = createChatGPTConnectionToken();

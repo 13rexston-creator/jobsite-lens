@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNotNull, lt, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { isSameOriginWrite } from "../../../chatgpt-connection";
 import { planAnalysisRuns, planFiles, planPages } from "../../../../db/schema";
@@ -508,7 +508,7 @@ async function recoverStaleClaims(userId: string, projectId: string) {
   ));
 }
 
-async function claimNextPage(userId: string, projectId: string, priorityOnly = false, requestedPageId = "") {
+async function claimNextPage(userId: string, projectId: string, priorityOnly = false, requestedPageId = "", analysisIntent = "", requiredVersion = "") {
   const db = getDb();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const [candidate] = await db.select({
@@ -534,9 +534,19 @@ async function claimNextPage(userId: string, projectId: string, priorityOnly = f
       isNotNull(planPages.storageKey),
       gt(planPages.imageSize, 0),
       lte(planPages.imageSize, MAX_PAGE_IMAGE_SIZE),
-      inArray(planPages.analysisStatus, requestedPageId ? ["pending", "failed", "complete"] : ["pending", "failed"]),
+      requiredVersion
+        ? or(inArray(planPages.analysisStatus, ["pending", "failed"]), ne(planPages.analysisVersion, requiredVersion))
+        : inArray(planPages.analysisStatus, requestedPageId ? ["pending", "failed", "complete"] : ["pending", "failed"]),
       requestedPageId ? eq(planPages.id, requestedPageId) : undefined,
       priorityOnly ? sql`${fixturePagePrioritySql} <= 1` : undefined,
+      analysisIntent === "tub_handedness" ? sql`(
+        instr(lower(${planPages.extractedText}), 'tub') > 0 or
+        instr(lower(${planPages.extractedText}), 'unit plan') > 0 or
+        instr(lower(${planPages.extractedText}), 'unit matrix') > 0 or
+        instr(lower(${planPages.extractedText}), 'floor plan') > 0 or
+        instr(lower(${planPages.extractedText}), 'pl401') > 0 or
+        instr(lower(${planPages.extractedText}), 'pl402') > 0
+      )` : undefined,
     )).orderBy(
       sql`CASE WHEN ${planPages.analysisStatus} = 'pending' THEN 0 ELSE 1 END`,
       fixturePagePrioritySql,
@@ -560,7 +570,9 @@ async function claimNextPage(userId: string, projectId: string, priorityOnly = f
       isNotNull(planPages.storageKey),
       gt(planPages.imageSize, 0),
       lte(planPages.imageSize, MAX_PAGE_IMAGE_SIZE),
-      inArray(planPages.analysisStatus, requestedPageId ? ["pending", "failed", "complete"] : ["pending", "failed"]),
+      requiredVersion
+        ? or(inArray(planPages.analysisStatus, ["pending", "failed"]), ne(planPages.analysisVersion, requiredVersion))
+        : inArray(planPages.analysisStatus, requestedPageId ? ["pending", "failed", "complete"] : ["pending", "failed"]),
       requestedPageId ? eq(planPages.id, requestedPageId) : undefined,
     )).returning({ id: planPages.id });
     if (claimed) return candidate;
@@ -657,6 +669,7 @@ async function markPage(
     analysisStatus: string;
     analysisJson?: string | null;
     analysisError?: string | null;
+    analysisVersion?: string;
     storageKey?: string | null;
     imageSize?: number | null;
     width?: number | null;
@@ -702,7 +715,7 @@ export async function POST(request: Request) {
   if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
     return Response.json({ error: "Send a valid projectId as JSON." }, { status: 400 });
   }
-  const body = parsedBody as { projectId?: unknown; priorityOnly?: unknown; pageId?: unknown; provider?: unknown; strength?: unknown };
+  const body = parsedBody as { projectId?: unknown; priorityOnly?: unknown; pageId?: unknown; provider?: unknown; strength?: unknown; analysisIntent?: unknown; requiredVersion?: unknown };
   const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "";
   const priorityOnly = body.priorityOnly === true;
   const pageId = typeof body.pageId === "string" ? body.pageId.trim().slice(0, 128) : "";
@@ -711,12 +724,14 @@ export async function POST(request: Request) {
     return Response.json({ error: "Choose OpenAI or Gemini as the VLM provider." }, { status: 400 });
   }
   const strength = body.strength === "strong" ? "strong" : "standard";
+  const analysisIntent = body.analysisIntent === "tub_handedness" ? "tub_handedness" : "";
+  const requiredVersion = typeof body.requiredVersion === "string" ? body.requiredVersion.trim().slice(0, 64) : "";
   const authorized = await authorizedProject(projectId);
   if ("response" in authorized) return authorized.response;
   const { user, project } = authorized;
 
   await recoverStaleClaims(user.userId, project.id);
-  const page = await claimNextPage(user.userId, project.id, priorityOnly, pageId);
+  const page = await claimNextPage(user.userId, project.id, priorityOnly, pageId, analysisIntent, requiredVersion);
   if (!page) {
     return Response.json({ processed: false, page: null, ...await getFixtureTakeoffState(user.userId, project) });
   }
@@ -766,6 +781,7 @@ export async function POST(request: Request) {
       analysisStatus: "complete",
       analysisJson: JSON.stringify(analysis),
       analysisError: null,
+      analysisVersion,
     });
     if (!saved.length) throw new Error("The page analysis claim expired before it could be saved.");
     return Response.json({ processed: true, page: publicPage, analysis: {

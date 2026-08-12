@@ -205,6 +205,7 @@ export async function upsertPlanPageForFile(request: Request, fileId: string) {
     analysisStatus,
     analysisJson: resetAnalysis || !isCandidate ? null : existing?.analysisJson ?? null,
     analysisError: resetAnalysis || !isCandidate ? null : existing?.analysisError ?? null,
+    analysisVersion: resetAnalysis || !isCandidate ? "" : existing?.analysisVersion ?? "",
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -221,6 +222,7 @@ export async function upsertPlanPageForFile(request: Request, fileId: string) {
       analysisStatus: values.analysisStatus,
       analysisJson: values.analysisJson,
       analysisError: values.analysisError,
+      analysisVersion: values.analysisVersion,
       updatedAt: values.updatedAt,
     },
   });

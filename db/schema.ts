@@ -64,6 +64,7 @@ export const planPages = sqliteTable("plan_pages", {
   analysisStatus: text("analysis_status").notNull().default("pending"),
   analysisJson: text("analysis_json"),
   analysisError: text("analysis_error"),
+  analysisVersion: text("analysis_version").notNull().default(""),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 }, (table) => [

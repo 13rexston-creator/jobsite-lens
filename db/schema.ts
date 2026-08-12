@@ -72,6 +72,34 @@ export const planPages = sqliteTable("plan_pages", {
   index("idx_plan_pages_project_candidate_status").on(table.projectId, table.isCandidate, table.analysisStatus),
 ]);
 
+export const planFixtureIntelligence = sqliteTable("plan_fixture_intelligence", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => planProjects.id, { onDelete: "cascade" }),
+  fileId: text("file_id").notNull().references(() => planFiles.id, { onDelete: "cascade" }),
+  pageId: text("page_id").notNull().references(() => planPages.id, { onDelete: "cascade" }),
+  ownerUserId: text("owner_user_id").notNull(),
+  building: text("building").notNull().default(""),
+  level: text("level").notNull().default(""),
+  unitNumber: text("unit_number").notNull().default(""),
+  unitType: text("unit_type").notNull().default(""),
+  room: text("room").notNull().default(""),
+  fixtureType: text("fixture_type").notNull(),
+  fixtureSubtype: text("fixture_subtype").notNull().default(""),
+  orientation: text("orientation").notNull().default("UNKNOWN"),
+  quantity: integer("quantity").notNull().default(1),
+  evidence: text("evidence").notNull().default(""),
+  confidence: integer("confidence").notNull().default(0),
+  sheetNumber: text("sheet_number").notNull().default(""),
+  sheetTitle: text("sheet_title").notNull().default(""),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  index("idx_plan_fixture_project_type_orientation").on(table.projectId, table.fixtureType, table.orientation),
+  index("idx_plan_fixture_project_location").on(table.projectId, table.building, table.level, table.unitNumber),
+  index("idx_plan_fixture_page").on(table.pageId),
+  index("idx_plan_fixture_owner_project").on(table.ownerUserId, table.projectId),
+]);
+
 export const chatgptConnections = sqliteTable("chatgpt_connections", {
   id: text("id").primaryKey(),
   ownerUserId: text("owner_user_id").notNull(),

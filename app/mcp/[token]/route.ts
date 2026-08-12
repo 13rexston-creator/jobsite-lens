@@ -6,14 +6,15 @@ import { planFiles, planPages, planProjects } from "../../../db/schema";
 import { resolveChatGPTConnection, type ChatGPTConnectionOwner } from "../../chatgpt-connection";
 import { fixturePagePrioritySql } from "../../fixture-page-priority";
 import { requirePlanStorage } from "../../plan-library";
+import { FIXTURE_ORIENTATIONS, FIXTURE_TYPES, queryFixtureIntelligence } from "../../plan-intelligence";
 import { MAX_PAGE_IMAGE_SIZE } from "../../plan-pages";
 
 const MAX_QUERY_LENGTH = 256;
-const MAX_SEARCH_RESULTS = 20;
-const MAX_SEARCH_CANDIDATES = 160;
-const MAX_SEARCH_TEXT = 12_000;
-const MAX_FETCH_TEXT = 48_000;
-const MAX_FETCH_PAGES = 40;
+const MAX_SEARCH_RESULTS = 8;
+const MAX_SEARCH_CANDIDATES = 80;
+const MAX_SEARCH_TEXT = 4_000;
+const MAX_FETCH_TEXT = 12_000;
+const MAX_FETCH_PAGES = 8;
 const MAX_INLINE_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_TAKEOFF_ANALYSES = 600;
 const CONSTRUCTION_CAVEAT = "Automated drawing takeoff is an aid, not a sealed estimate. Verify quantities against the current issued drawings and with the field/design team before procurement, fabrication, or installation.";
@@ -734,6 +735,30 @@ function createPlanServer(owner: ChatGPTConnectionOwner, origin: string) {
   }, async ({ projectId }) => {
     const takeoff = await fixtureTakeoff(owner.ownerUserId, origin, projectId);
     return takeoff ? jsonResult(takeoff) : toolError("The requested plan project was not found.");
+  });
+
+  server.registerTool("query_plan_intelligence", {
+    title: "Query stored plan intelligence",
+    description: "Use this first for fixture, bathroom, room, unit, level, building, and orientation quantity questions. It reads compact cached structured analysis and does not send PDFs, OCR dumps, or page images to a model.",
+    inputSchema: z.object({
+      projectId: z.string().min(1).max(128),
+      fixtureType: z.enum(FIXTURE_TYPES).optional(),
+      orientation: z.enum(FIXTURE_ORIENTATIONS).optional(),
+      building: z.string().max(80).optional(),
+      level: z.string().max(80).optional(),
+      unitNumber: z.string().max(80).optional(),
+    }),
+    annotations: READ_ONLY_ANNOTATIONS,
+  }, async ({ projectId, ...filters }) => {
+    const project = await getDb().select({ id: planProjects.id }).from(planProjects).where(and(
+      eq(planProjects.id, projectId), eq(planProjects.ownerUserId, owner.ownerUserId),
+    )).limit(1);
+    if (!project.length) return toolError("Plan project not found.");
+    const result = await queryFixtureIntelligence(owner.ownerUserId, projectId, filters);
+    return jsonResult({ ...result, sources: result.sources.map((source) => ({
+      ...source,
+      url: pageUrl(origin, projectId, source.fileId, source.pageId, true),
+    })) });
   });
 
   return server;

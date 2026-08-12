@@ -3,6 +3,7 @@ import { getDb } from "../../../../db";
 import { planFiles, planPages } from "../../../../db/schema";
 import { fixturePagePrioritySql } from "../../../fixture-page-priority";
 import { MAX_PAGE_IMAGE_SIZE } from "../../../plan-pages";
+import { FIXTURE_ORIENTATIONS, replacePageFixtureIntelligence, type FixtureRecord } from "../../../plan-intelligence";
 import {
   getAuthorizedPlanUser,
   getOwnedPlanProject,
@@ -66,6 +67,7 @@ type PageAnalysis = {
   };
   bathroomRooms: CountRow<RoomType>[];
   fixtures: Array<CountRow<FixtureType> & { drawingLabel: string }>;
+  fixtureRecords: FixtureRecord[];
   confidence: number;
   isPrimaryCountView: boolean;
   scopeKey: string;
@@ -137,13 +139,31 @@ const PAGE_TAKEOFF_SCHEMA = {
         required: ["type", "label", "drawingLabel", "visibleCount", "estimatedCount", "basis"],
       },
     },
+    fixtureRecords: {
+      type: "array",
+      maxItems: 300,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          building: { type: "string" }, level: { type: "string" }, unitNumber: { type: "string" }, unitType: { type: "string" }, room: { type: "string" },
+          fixtureType: { type: "string", enum: [...FIXTURE_TYPES, "bathroom_group"] },
+          fixtureSubtype: { type: "string" },
+          orientation: { type: "string", enum: FIXTURE_ORIENTATIONS },
+          quantity: { type: "integer", minimum: 1, maximum: MAX_ANALYSIS_COUNT },
+          evidence: { type: "string" },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+        },
+        required: ["building", "level", "unitNumber", "unitType", "room", "fixtureType", "fixtureSubtype", "orientation", "quantity", "evidence", "confidence"],
+      },
+    },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     isPrimaryCountView: { type: "boolean" },
     scopeKey: { type: "string" },
     warnings: { type: "array", maxItems: 30, items: { type: "string" } },
     notes: { type: "array", maxItems: 30, items: { type: "string" } },
   },
-  required: ["sheetMetadata", "bathroomRooms", "fixtures", "confidence", "isPrimaryCountView", "scopeKey", "warnings", "notes"],
+  required: ["sheetMetadata", "bathroomRooms", "fixtures", "fixtureRecords", "confidence", "isPrimaryCountView", "scopeKey", "warnings", "notes"],
 } as const;
 
 function boundedText(value: unknown, maximum: number) {
@@ -216,6 +236,25 @@ function parsePageAnalysis(value: unknown): PageAnalysis {
   }
   const scopeKey = normalizedScopeKey(value.scopeKey);
   if (!scopeKey) throw new Error("OpenAI did not identify the drawing scope.");
+  const rawFixtureRecords = value.fixtureRecords === undefined ? [] : value.fixtureRecords;
+  if (!Array.isArray(rawFixtureRecords) || rawFixtureRecords.length > 300) throw new Error("OpenAI returned invalid fixture records.");
+  const allowedFixtureTypes = new Set<string>([...FIXTURE_TYPES, "bathroom_group"]);
+  const allowedOrientations = new Set<string>(FIXTURE_ORIENTATIONS);
+  const fixtureRecords = rawFixtureRecords.map((item, index): FixtureRecord => {
+    if (!isRecord(item) || typeof item.fixtureType !== "string" || !allowedFixtureTypes.has(item.fixtureType)
+      || typeof item.orientation !== "string" || !allowedOrientations.has(item.orientation)
+      || typeof item.confidence !== "number" || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1) {
+      throw new Error(`OpenAI returned an invalid fixtureRecords[${index}].`);
+    }
+    return {
+      building: boundedText(item.building, 100), level: boundedText(item.level, 100),
+      unitNumber: boundedText(item.unitNumber, 100), unitType: boundedText(item.unitType, 100),
+      room: boundedText(item.room, 120), fixtureType: item.fixtureType as FixtureRecord["fixtureType"],
+      fixtureSubtype: boundedText(item.fixtureSubtype, 160), orientation: item.orientation as FixtureRecord["orientation"],
+      quantity: countValue(item.quantity, `fixtureRecords[${index}].quantity`),
+      evidence: boundedText(item.evidence, 500), confidence: item.confidence,
+    };
+  });
   return {
     sheetMetadata: {
       sheetNumber: boundedText(value.sheetMetadata.sheetNumber, 80),
@@ -226,6 +265,7 @@ function parsePageAnalysis(value: unknown): PageAnalysis {
     },
     bathroomRooms: parseCountRows(value.bathroomRooms, ROOM_TYPES, 40, "bathroomRooms"),
     fixtures: parseCountRows(value.fixtures, FIXTURE_TYPES, 80, "fixtures", true) as PageAnalysis["fixtures"],
+    fixtureRecords,
     confidence,
     isPrimaryCountView: value.isPrimaryCountView,
     scopeKey,
@@ -574,6 +614,9 @@ Counting rules:
 - Avoid cross-discipline double counting. Architectural, plumbing DWV, plumbing water, electrical, and interior pages may show the same physical fixture population. Use the same concise scopeKey for the same building/area/level/unit population, independent of discipline.
 - Set isPrimaryCountView=true only for an authoritative floor/fixture plan whose physical population is visibly countable, or an explicit unit/count matrix. A typical unit plan without an explicit project multiplier may be primary only for that one displayed unit, never for every project unit.
 - Keep bathrooms/restrooms/shower rooms classified separately. A bi-level drinking cooler may have two fountain heads but is not automatically two separate cabinet fixtures; explain the chosen counting basis.
+- Create reusable fixtureRecords for every physical fixture supported by an authoritative count view. Capture building, level, unit number, unit type, and room only when the page establishes them. Use quantity greater than 1 only for explicitly repeated identical fixtures with the same location and evidence.
+- For bathtubs, orientation is the manufactured handing determined by the valve/drain end: LEFT_HAND only when that end is demonstrably on the left when facing the tub apron from the room, and RIGHT_HAND only when demonstrably on the right. Page position, drawing rotation, or the wall touched by the tub is not enough. Use UNKNOWN whenever the valve/drain end or viewing direction is ambiguous. Never infer handing from a legend, generic symbol, schedule image, mirrored graphic, or unlabeled typical detail.
+- A bathroom_group record represents one physical bathroom only on an authoritative count view. Validation-only schedules, legends, details, risers, and duplicate disciplines must return an empty fixtureRecords array.
 - Prefer current revision information visible on the page. Flag conflicts, superseded or plan-check revisions, stale references, ambiguous symbols, overlapping views, unreadable areas, and any count that needs design-team confirmation.
 - Use empty strings for unavailable sheet metadata. Use zero, not a guess, where no supported count exists. Keep warnings and notes short and specific.
 - The saved result will carry this caveat: ${CONSTRUCTION_CAVEAT}`;
@@ -689,6 +732,15 @@ export async function POST(request: Request) {
     const text = outputText(response);
     if (!text) throw new Error("OpenAI did not return a structured page takeoff.");
     const analysis = parsePageAnalysis(JSON.parse(text) as unknown);
+    await replacePageFixtureIntelligence({
+      ownerUserId: user.userId,
+      projectId: project.id,
+      fileId: page.fileId,
+      pageId: page.pageId,
+      sheetNumber: analysis.sheetMetadata.sheetNumber,
+      sheetTitle: analysis.sheetMetadata.sheetTitle,
+      records: analysis.isPrimaryCountView ? analysis.fixtureRecords : [],
+    });
     const saved = await markPage(page.pageId, user.userId, project.id, {
       analysisStatus: "complete",
       analysisJson: JSON.stringify(analysis),

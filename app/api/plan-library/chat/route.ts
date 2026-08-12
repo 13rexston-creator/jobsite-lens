@@ -3,6 +3,7 @@ import { getDb } from "../../../../db";
 import { chatgptConnections } from "../../../../db/schema";
 import { createChatGPTConnectionToken, hashChatGPTConnectionToken, isSameOriginWrite } from "../../../chatgpt-connection";
 import { getAuthorizedPlanUser, getOwnedPlanProject, openAIRequest, outputText, planRuntime, planSafetyIdentifier } from "../../../plan-library";
+import { parseStructuredFixtureQuestion, queryFixtureIntelligence } from "../../../plan-intelligence";
 
 type HistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -58,6 +59,22 @@ export async function POST(request: Request) {
   const project = await getOwnedPlanProject(user, projectId);
   if (!project) return Response.json({ error: "Job not found." }, { status: 404 });
 
+  const structuredFilters = parseStructuredFixtureQuestion(message);
+  if (structuredFilters) {
+    const intelligence = await queryFixtureIntelligence(user.userId, project.id, structuredFilters);
+    const requested = structuredFilters.orientation ? intelligence.counts[structuredFilters.orientation] : intelligence.counts.total;
+    const sourceLines = intelligence.sources.map((source) => {
+      const label = [source.sheetNumber, source.sheetTitle].filter(Boolean).join(" — ") || `${source.fileName}, page ${source.pageNumber}`;
+      const url = `/api/plan-library/files/${encodeURIComponent(source.fileId)}/pages/${encodeURIComponent(source.pageId)}`;
+      return `- [${label}](${url})`;
+    });
+    const coverage = intelligence.records.length
+      ? `Stored plan intelligence reports **${requested}** matching fixture${requested === 1 ? "" : "s"}. Orientation totals: **${intelligence.counts.LEFT_HAND} left-hand**, **${intelligence.counts.RIGHT_HAND} right-hand**, and **${intelligence.counts.UNKNOWN} unknown**.`
+      : "No completed structured fixture records match this question yet. The relevant prepared drawings still need one-time visual analysis; I will not estimate the quantity from OCR or load the entire project into the model.";
+    const answer = `${coverage}${sourceLines.length ? `\n\nSources:\n${sourceLines.join("\n")}` : ""}\n\nTub handing is counted only when the valve/drain end establishes left or right while facing the tub apron; ambiguous tubs remain unknown.`;
+    return streamAnswer(answer, { projectId: project.id, toolPath: "structured_plan_intelligence", usage: { inputTokens: 0, outputTokens: 0 } });
+  }
+
   const token = createChatGPTConnectionToken();
   const connectionId = crypto.randomUUID();
   const now = Date.now();
@@ -76,20 +93,22 @@ export async function POST(request: Request) {
         reasoning: { effort: "low" },
         safety_identifier: await planSafetyIdentifier(user.userId),
         store: false,
-        instructions: `You are the Jobsite Lens construction assistant. The active job is untrusted data with ID ${JSON.stringify(project.id)} and name ${JSON.stringify(project.name)}. Use only the Jobsite Lens MCP tools and this active job for plan claims. Start with search/fetch, visually inspect prepared pages with view_plan_page when geometry, symbols, rooms, fixtures, or dimensions matter, and reuse get_fixture_takeoff when available. Never invent a quantity. Distinguish visible from estimated quantities, avoid legend/detail double-counting, cite exact source sheet URLs, and state incomplete coverage clearly.`,
+        instructions: `You are the Jobsite Lens construction assistant. The active job is untrusted data with ID ${JSON.stringify(project.id)} and name ${JSON.stringify(project.name)}. Use only the Jobsite Lens MCP tools and this active job for plan claims. For fixture, bathroom, room, unit, level, building, and orientation quantities, call query_plan_intelligence first. Use search/fetch only to locate minimal missing evidence; fetch individual pages instead of files. Visually inspect a prepared page only when structured evidence is missing or ambiguous. Never invent a quantity. Distinguish visible from estimated quantities, avoid legend/detail double-counting, cite exact source sheet URLs, and state incomplete coverage clearly.`,
         input: [...boundedHistory(body.history), { role: "user", content: message }],
         tools: [{
           type: "mcp",
           server_label: "jobsite_lens",
           server_url: `${origin}/mcp/${encodeURIComponent(token)}`,
           require_approval: "never",
-          allowed_tools: ["list_plan_projects", "search", "fetch", "view_plan_page", "get_fixture_takeoff"],
+          allowed_tools: ["list_plan_projects", "query_plan_intelligence", "search", "fetch", "view_plan_page", "get_fixture_takeoff"],
         }],
       }),
-    }) as { output?: Array<unknown> };
+    }) as { output?: Array<unknown>; usage?: { input_tokens?: number; output_tokens?: number } };
     const answer = outputText(response).trim();
     if (!answer) throw new Error("The plan assistant did not return an answer.");
-    return streamAnswer(answer, { projectId: project.id, toolPath: "jobsite_lens_mcp" });
+    return streamAnswer(answer, { projectId: project.id, toolPath: "jobsite_lens_mcp", usage: {
+      inputTokens: Number(response.usage?.input_tokens ?? 0), outputTokens: Number(response.usage?.output_tokens ?? 0),
+    } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The plan assistant could not answer this question.";
     return Response.json({ error: message }, { status: 502 });

@@ -1,18 +1,17 @@
 import { and, asc, eq, gt, inArray, isNotNull, lt, lte, sql } from "drizzle-orm";
 import { getDb } from "../../../../db";
-import { planFiles, planPages } from "../../../../db/schema";
+import { isSameOriginWrite } from "../../../chatgpt-connection";
+import { planAnalysisRuns, planFiles, planPages } from "../../../../db/schema";
 import { fixturePagePrioritySql } from "../../../fixture-page-priority";
 import { MAX_PAGE_IMAGE_SIZE } from "../../../plan-pages";
-import { FIXTURE_ORIENTATIONS, replacePageFixtureIntelligence, type FixtureRecord } from "../../../plan-intelligence";
+import { FIXTURE_ORIENTATIONS, FIXTURE_RECORD_ROLES, replacePageFixtureIntelligence, type FixtureRecord } from "../../../plan-intelligence";
 import {
   getAuthorizedPlanUser,
   getOwnedPlanProject,
-  openAIRequest,
-  outputText,
   planRuntime,
-  planSafetyIdentifier,
   requirePlanStorage,
 } from "../../../plan-library";
+import { configuredVlmProvider } from "../../../vlm/provider";
 
 const STALE_PROCESSING_MS = 15 * 60 * 1000;
 const MAX_PROMPT_TEXT_LENGTH = 12_000;
@@ -90,7 +89,7 @@ type StateRow = SourcePage & {
   analysisError: string | null;
 };
 
-const PAGE_TAKEOFF_SCHEMA = {
+export const PAGE_TAKEOFF_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -147,14 +146,24 @@ const PAGE_TAKEOFF_SCHEMA = {
         additionalProperties: false,
         properties: {
           building: { type: "string" }, level: { type: "string" }, unitNumber: { type: "string" }, unitType: { type: "string" }, room: { type: "string" },
+          recordRole: { type: "string", enum: FIXTURE_RECORD_ROLES },
           fixtureType: { type: "string", enum: [...FIXTURE_TYPES, "bathroom_group"] },
           fixtureSubtype: { type: "string" },
           orientation: { type: "string", enum: FIXTURE_ORIENTATIONS },
           quantity: { type: "integer", minimum: 1, maximum: MAX_ANALYSIS_COUNT },
           evidence: { type: "string" },
           confidence: { type: "number", minimum: 0, maximum: 1 },
+          boundingRegion: {
+            anyOf: [
+              { type: "null" },
+              { type: "object", additionalProperties: false, properties: {
+                x: { type: "number", minimum: 0, maximum: 1 }, y: { type: "number", minimum: 0, maximum: 1 },
+                width: { type: "number", minimum: 0, maximum: 1 }, height: { type: "number", minimum: 0, maximum: 1 },
+              }, required: ["x", "y", "width", "height"] },
+            ],
+          },
         },
-        required: ["building", "level", "unitNumber", "unitType", "room", "fixtureType", "fixtureSubtype", "orientation", "quantity", "evidence", "confidence"],
+        required: ["building", "level", "unitNumber", "unitType", "room", "recordRole", "fixtureType", "fixtureSubtype", "orientation", "quantity", "evidence", "confidence", "boundingRegion"],
       },
     },
     confidence: { type: "number", minimum: 0, maximum: 1 },
@@ -223,7 +232,7 @@ function parseCountRows<T extends string>(
   });
 }
 
-function parsePageAnalysis(value: unknown): PageAnalysis {
+export function parsePageAnalysis(value: unknown): PageAnalysis {
   if (!isRecord(value) || !isRecord(value.sheetMetadata)) {
     throw new Error("OpenAI returned an invalid page takeoff.");
   }
@@ -240,9 +249,11 @@ function parsePageAnalysis(value: unknown): PageAnalysis {
   if (!Array.isArray(rawFixtureRecords) || rawFixtureRecords.length > 300) throw new Error("OpenAI returned invalid fixture records.");
   const allowedFixtureTypes = new Set<string>([...FIXTURE_TYPES, "bathroom_group"]);
   const allowedOrientations = new Set<string>(FIXTURE_ORIENTATIONS);
+  const allowedRecordRoles = new Set<string>(FIXTURE_RECORD_ROLES);
   const fixtureRecords = rawFixtureRecords.map((item, index): FixtureRecord => {
     if (!isRecord(item) || typeof item.fixtureType !== "string" || !allowedFixtureTypes.has(item.fixtureType)
       || typeof item.orientation !== "string" || !allowedOrientations.has(item.orientation)
+      || typeof item.recordRole !== "string" || !allowedRecordRoles.has(item.recordRole)
       || typeof item.confidence !== "number" || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1) {
       throw new Error(`OpenAI returned an invalid fixtureRecords[${index}].`);
     }
@@ -250,9 +261,15 @@ function parsePageAnalysis(value: unknown): PageAnalysis {
       building: boundedText(item.building, 100), level: boundedText(item.level, 100),
       unitNumber: boundedText(item.unitNumber, 100), unitType: boundedText(item.unitType, 100),
       room: boundedText(item.room, 120), fixtureType: item.fixtureType as FixtureRecord["fixtureType"],
+      recordRole: item.recordRole as FixtureRecord["recordRole"],
       fixtureSubtype: boundedText(item.fixtureSubtype, 160), orientation: item.orientation as FixtureRecord["orientation"],
       quantity: countValue(item.quantity, `fixtureRecords[${index}].quantity`),
       evidence: boundedText(item.evidence, 500), confidence: item.confidence,
+      boundingRegion: isRecord(item.boundingRegion)
+        && [item.boundingRegion.x, item.boundingRegion.y, item.boundingRegion.width, item.boundingRegion.height]
+          .every((coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate) && coordinate >= 0 && coordinate <= 1)
+        ? { x: item.boundingRegion.x as number, y: item.boundingRegion.y as number, width: item.boundingRegion.width as number, height: item.boundingRegion.height as number }
+        : null,
     };
   });
   return {
@@ -491,7 +508,7 @@ async function recoverStaleClaims(userId: string, projectId: string) {
   ));
 }
 
-async function claimNextPage(userId: string, projectId: string, priorityOnly = false) {
+async function claimNextPage(userId: string, projectId: string, priorityOnly = false, requestedPageId = "") {
   const db = getDb();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const [candidate] = await db.select({
@@ -517,7 +534,8 @@ async function claimNextPage(userId: string, projectId: string, priorityOnly = f
       isNotNull(planPages.storageKey),
       gt(planPages.imageSize, 0),
       lte(planPages.imageSize, MAX_PAGE_IMAGE_SIZE),
-      inArray(planPages.analysisStatus, ["pending", "failed"]),
+      inArray(planPages.analysisStatus, requestedPageId ? ["pending", "failed", "complete"] : ["pending", "failed"]),
+      requestedPageId ? eq(planPages.id, requestedPageId) : undefined,
       priorityOnly ? sql`${fixturePagePrioritySql} <= 1` : undefined,
     )).orderBy(
       sql`CASE WHEN ${planPages.analysisStatus} = 'pending' THEN 0 ELSE 1 END`,
@@ -542,7 +560,8 @@ async function claimNextPage(userId: string, projectId: string, priorityOnly = f
       isNotNull(planPages.storageKey),
       gt(planPages.imageSize, 0),
       lte(planPages.imageSize, MAX_PAGE_IMAGE_SIZE),
-      inArray(planPages.analysisStatus, ["pending", "failed"]),
+      inArray(planPages.analysisStatus, requestedPageId ? ["pending", "failed", "complete"] : ["pending", "failed"]),
+      requestedPageId ? eq(planPages.id, requestedPageId) : undefined,
     )).returning({ id: planPages.id });
     if (claimed) return candidate;
   }
@@ -574,7 +593,7 @@ function base64Jpeg(bytes: Uint8Array) {
 
 class PageImageError extends Error {}
 
-async function pageImageDataUrl(storageKey: string, declaredSize: number | null) {
+export async function pageImageDataUrl(storageKey: string, declaredSize: number | null) {
   if (declaredSize === null || declaredSize <= 0 || declaredSize > MAX_PAGE_IMAGE_SIZE) {
     throw new PageImageError("The prepared page JPEG is missing or exceeds the 5 MB analysis limit.");
   }
@@ -590,7 +609,7 @@ async function pageImageDataUrl(storageKey: string, declaredSize: number | null)
   return `data:image/jpeg;base64,${base64Jpeg(bytes)}`;
 }
 
-function pagePrompt(projectName: string, page: NonNullable<Awaited<ReturnType<typeof claimNextPage>>>) {
+export function pagePrompt(projectName: string, page: { fileName: string; pageNumber: number; pageCount: number; width: number | null; height: number | null; extractedText: string }) {
   const sourceMetadata = JSON.stringify({
     projectName,
     fileName: page.fileName,
@@ -612,11 +631,11 @@ Counting rules:
 - estimatedCount means a quantity derived from an explicit matrix or multiplier printed on this same page. Never multiply units, floors, buildings, or typical layouts unless the page explicitly provides both the multiplier and its applicable count. Never add visibleCount and estimatedCount together.
 - A fixture schedule, legend, detail, riser, isometric, DWV plan, water plan, or enlarged duplicate is validation-only. Set isPrimaryCountView=false and do not turn schedule rows, legend symbols, detail callouts, pipe connections, or repeated views into physical fixture counts.
 - Avoid cross-discipline double counting. Architectural, plumbing DWV, plumbing water, electrical, and interior pages may show the same physical fixture population. Use the same concise scopeKey for the same building/area/level/unit population, independent of discipline.
-- Set isPrimaryCountView=true only for an authoritative floor/fixture plan whose physical population is visibly countable, or an explicit unit/count matrix. A typical unit plan without an explicit project multiplier may be primary only for that one displayed unit, never for every project unit.
+- Set isPrimaryCountView=true for an authoritative building floor/fixture plan, an explicit unit/count matrix, or a typical-unit sheet that contains a plan view with countable fixture geometry. A typical-unit sheet represents a reusable UNIT_TYPE_TEMPLATE, never every project unit by itself. Elevation-only sheets remain validation-only.
 - Keep bathrooms/restrooms/shower rooms classified separately. A bi-level drinking cooler may have two fountain heads but is not automatically two separate cabinet fixtures; explain the chosen counting basis.
-- Create reusable fixtureRecords for every physical fixture supported by an authoritative count view. Capture building, level, unit number, unit type, and room only when the page establishes them. Use quantity greater than 1 only for explicitly repeated identical fixtures with the same location and evidence.
+- Create reusable fixtureRecords for every physical fixture supported by an authoritative count view. Use recordRole=INSTALLED_INSTANCE for a located physical item, UNIT_TYPE_TEMPLATE for fixtures on a typical-unit plan, and EXPLICIT_MULTIPLIER only for quantities printed in a unit/count matrix. Capture building, level, unit number, unit type, and room only when the page establishes them. Use quantity greater than 1 only for an explicit printed multiplier or repeated identical items with the same scope and evidence. boundingRegion is a normalized 0..1 rectangle around the visual evidence, or null when a reliable region cannot be localized.
 - For bathtubs, orientation is the manufactured handing determined by the valve/drain end: LEFT_HAND only when that end is demonstrably on the left when facing the tub apron from the room, and RIGHT_HAND only when demonstrably on the right. Page position, drawing rotation, or the wall touched by the tub is not enough. Use UNKNOWN whenever the valve/drain end or viewing direction is ambiguous. Never infer handing from a legend, generic symbol, schedule image, mirrored graphic, or unlabeled typical detail.
-- A bathroom_group record represents one physical bathroom only on an authoritative count view. Validation-only schedules, legends, details, risers, and duplicate disciplines must return an empty fixtureRecords array.
+- A bathroom_group record with UNIT_TYPE_TEMPLATE describes the bathrooms in one typical unit; with EXPLICIT_MULTIPLIER it stores the printed number of applicable units/bathrooms for that unit type; with INSTALLED_INSTANCE it stores a located physical bathroom. Validation-only schedules, legends, details, risers, and duplicate disciplines must return an empty fixtureRecords array.
 - Prefer current revision information visible on the page. Flag conflicts, superseded or plan-check revisions, stale references, ambiguous symbols, overlapping views, unreadable areas, and any count that needs design-team confirmation.
 - Use empty strings for unavailable sheet metadata. Use zero, not a guess, where no supported count exists. Keep warnings and notes short and specific.
 - The saved result will carry this caveat: ${CONSTRUCTION_CAVEAT}`;
@@ -671,24 +690,33 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  if (!isSameOriginWrite(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
   let parsedBody: unknown;
   try {
-    parsedBody = await request.json();
+    parsedBody = request.headers.get("content-type")?.includes("application/x-www-form-urlencoded")
+      ? Object.fromEntries((await request.formData()).entries())
+      : await request.json();
   } catch {
     return Response.json({ error: "Send a valid projectId as JSON." }, { status: 400 });
   }
   if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
     return Response.json({ error: "Send a valid projectId as JSON." }, { status: 400 });
   }
-  const body = parsedBody as { projectId?: unknown; priorityOnly?: unknown };
+  const body = parsedBody as { projectId?: unknown; priorityOnly?: unknown; pageId?: unknown; provider?: unknown; strength?: unknown };
   const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "";
   const priorityOnly = body.priorityOnly === true;
+  const pageId = typeof body.pageId === "string" ? body.pageId.trim().slice(0, 128) : "";
+  const providerName = typeof body.provider === "string" ? body.provider.trim().toLowerCase() : "";
+  if (providerName && providerName !== "openai" && providerName !== "gemini") {
+    return Response.json({ error: "Choose OpenAI or Gemini as the VLM provider." }, { status: 400 });
+  }
+  const strength = body.strength === "strong" ? "strong" : "standard";
   const authorized = await authorizedProject(projectId);
   if ("response" in authorized) return authorized.response;
   const { user, project } = authorized;
 
   await recoverStaleClaims(user.userId, project.id);
-  const page = await claimNextPage(user.userId, project.id, priorityOnly);
+  const page = await claimNextPage(user.userId, project.id, priorityOnly, pageId);
   if (!page) {
     return Response.json({ processed: false, page: null, ...await getFixtureTakeoffState(user.userId, project) });
   }
@@ -703,38 +731,18 @@ export async function POST(request: Request) {
   try {
     if (!page.storageKey) throw new PageImageError("This candidate page has no prepared JPEG. Render and upload the page before analysis.");
     const imageUrl = await pageImageDataUrl(page.storageKey, page.imageSize);
-    const runtime = planRuntime();
-    const response = await openAIRequest("/responses", {
-      method: "POST",
-      body: JSON.stringify({
-        model: runtime.OPENAI_TAKEOFF_MODEL ?? "gpt-5.6-luna",
-        reasoning: { effort: "low" },
-        // A dense floor plan can legitimately produce hundreds of compact
-        // fixture records. This is a one-time ingestion call; truncating its
-        // JSON loses the reusable cache and forces a paid retry.
-        max_output_tokens: 12_000,
-        safety_identifier: await planSafetyIdentifier(user.userId),
-        store: false,
-        input: [{
-          role: "user",
-          content: [
-            { type: "input_text", text: pagePrompt(project.name, page) },
-            { type: "input_image", image_url: imageUrl, detail: "high" },
-          ],
-        }],
-        text: {
-          format: {
-            type: "json_schema",
-            name: "plan_page_fixture_takeoff",
-            strict: true,
-            schema: PAGE_TAKEOFF_SCHEMA,
-          },
-        },
-      }),
-    }) as { output?: Array<{ content?: Array<{ type?: string; text?: string }> }> };
-    const text = outputText(response);
-    if (!text) throw new Error("OpenAI did not return a structured page takeoff.");
-    const analysis = parsePageAnalysis(JSON.parse(text) as unknown);
+    const provider = configuredVlmProvider(providerName);
+    const response = await provider.analyzePlanPage({
+      task: "analyze_page",
+      prompt: pagePrompt(project.name, page),
+      evidence: [{ imageDataUrl: imageUrl, kind: "full_sheet" }],
+      schema: PAGE_TAKEOFF_SCHEMA,
+      schemaName: "plan_page_fixture_takeoff",
+      ownerUserId: user.userId,
+      strength,
+    });
+    const analysis = parsePageAnalysis(response.data);
+    const analysisVersion = planRuntime().PLAN_ANALYSIS_VERSION?.trim() || "vlm-v1";
     await replacePageFixtureIntelligence({
       ownerUserId: user.userId,
       projectId: project.id,
@@ -742,7 +750,17 @@ export async function POST(request: Request) {
       pageId: page.pageId,
       sheetNumber: analysis.sheetMetadata.sheetNumber,
       sheetTitle: analysis.sheetMetadata.sheetTitle,
+      analysisProvider: response.provider,
+      analysisModel: response.model,
+      analysisVersion,
+      sourceRevision: analysis.sheetMetadata.revision,
       records: analysis.isPrimaryCountView ? analysis.fixtureRecords : [],
+    });
+    await getDb().insert(planAnalysisRuns).values({
+      id: crypto.randomUUID(), projectId: project.id, fileId: page.fileId, pageId: page.pageId,
+      ownerUserId: user.userId, provider: response.provider, model: response.model, task: "analyze_page",
+      status: "COMPLETE", inputTokens: response.inputTokens, outputTokens: response.outputTokens,
+      latencyMs: response.latencyMs, estimatedCostMicros: response.estimatedCostMicros, error: "", createdAt: Date.now(),
     });
     const saved = await markPage(page.pageId, user.userId, project.id, {
       analysisStatus: "complete",
@@ -750,7 +768,10 @@ export async function POST(request: Request) {
       analysisError: null,
     });
     if (!saved.length) throw new Error("The page analysis claim expired before it could be saved.");
-    return Response.json({ processed: true, page: publicPage, ...await getFixtureTakeoffState(user.userId, project) });
+    return Response.json({ processed: true, page: publicPage, analysis: {
+      provider: response.provider, model: response.model, analysisVersion,
+      inputTokens: response.inputTokens, outputTokens: response.outputTokens, latencyMs: response.latencyMs,
+    }, ...await getFixtureTakeoffState(user.userId, project) });
   } catch (error) {
     const message = safeError(error, "This drawing page could not be analyzed.");
     if (quotaError(message)) {

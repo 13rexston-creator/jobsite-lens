@@ -9,6 +9,13 @@ export type PlanRuntime = {
   OPENAI_PLAN_MODEL?: string;
   OPENAI_PLAN_CHAT_MODEL?: string;
   OPENAI_TAKEOFF_MODEL?: string;
+  OPENAI_VLM_MODEL?: string;
+  OPENAI_VLM_STRONG_MODEL?: string;
+  GOOGLE_API_KEY?: string;
+  GEMINI_VLM_MODEL?: string;
+  GEMINI_VLM_STRONG_MODEL?: string;
+  PLAN_VLM_PROVIDER?: string;
+  PLAN_ANALYSIS_VERSION?: string;
   JOBSITE_ADMIN_EMAIL?: string;
   PLANS?: R2Bucket;
 };

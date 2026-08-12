@@ -126,6 +126,7 @@ function addSearchItem(items: Map<string, SearchItem>, item: SearchItem) {
 async function searchPlans(ownerUserId: string, origin: string, query: string) {
   const tokens = searchTokens(query);
   if (!tokens.length) return { results: [] };
+  const requestedPdfPage = Number(/\b(?:pdf\s*)?page\s*(\d{1,4})\b/i.exec(query)?.[1] ?? 0);
   const db = getDb();
   const projectMatch = or(...tokens.map((token) => sql`instr(lower(${planProjects.name}), ${token}) > 0`))!;
   const fileMatch = or(...tokens.flatMap((token) => [
@@ -135,7 +136,7 @@ async function searchPlans(ownerUserId: string, origin: string, query: string) {
   const pageContentMatch = or(...tokens.flatMap((token) => [
     sql`instr(lower(${planPages.extractedText}), ${token}) > 0`,
     sql`instr(lower(coalesce(${planPages.analysisJson}, '')), ${token}) > 0`,
-  ]))!;
+  ]), requestedPdfPage > 0 ? eq(planPages.pageNumber, requestedPdfPage) : undefined)!;
   const pageContextMatch = or(...tokens.flatMap((token) => [
     sql`instr(lower(${planFiles.fileName}), ${token}) > 0`,
     sql`instr(lower(${planProjects.name}), ${token}) > 0`,

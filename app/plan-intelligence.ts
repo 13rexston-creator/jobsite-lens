@@ -7,8 +7,10 @@ export const FIXTURE_TYPES = [
   "drinking_fountain", "floor_drain", "washer_box", "ice_box", "hose_bibb", "bathroom_group", "other",
 ] as const;
 export const FIXTURE_ORIENTATIONS = ["LEFT_HAND", "RIGHT_HAND", "UNKNOWN"] as const;
+export const FIXTURE_RECORD_ROLES = ["INSTALLED_INSTANCE", "UNIT_TYPE_TEMPLATE", "EXPLICIT_MULTIPLIER"] as const;
 export type FixtureType = typeof FIXTURE_TYPES[number];
 export type FixtureOrientation = typeof FIXTURE_ORIENTATIONS[number];
+export type FixtureRecordRole = typeof FIXTURE_RECORD_ROLES[number];
 
 export type FixtureRecord = {
   building: string;
@@ -16,12 +18,14 @@ export type FixtureRecord = {
   unitNumber: string;
   unitType: string;
   room: string;
+  recordRole: FixtureRecordRole;
   fixtureType: FixtureType;
   fixtureSubtype: string;
   orientation: FixtureOrientation;
   quantity: number;
   evidence: string;
   confidence: number;
+  boundingRegion?: { x: number; y: number; width: number; height: number } | null;
 };
 
 export type IntelligenceFilters = {
@@ -66,6 +70,10 @@ export async function replacePageFixtureIntelligence(args: {
   pageId: string;
   sheetNumber: string;
   sheetTitle: string;
+  analysisProvider: string;
+  analysisModel: string;
+  analysisVersion: string;
+  sourceRevision: string;
   records: FixtureRecord[];
 }) {
   const db = getDb();
@@ -83,16 +91,22 @@ export async function replacePageFixtureIntelligence(args: {
     pageId: args.pageId,
     ownerUserId: args.ownerUserId,
     ...record,
+    boundingRegion: record.boundingRegion ? JSON.stringify(record.boundingRegion) : "",
+    evidenceStorageKey: "",
+    analysisProvider: args.analysisProvider,
+    analysisModel: args.analysisModel,
+    analysisVersion: args.analysisVersion,
+    sourceRevision: args.sourceRevision,
     confidence: Math.round(record.confidence * 1000),
     sheetNumber: args.sheetNumber,
     sheetTitle: args.sheetTitle,
     createdAt: now,
     updatedAt: now,
   }));
-  // D1 caps bound parameters per statement. This table has 20 columns, so
-  // four records per insert stays safely below the platform limit.
-  for (let offset = 0; offset < values.length; offset += 4) {
-    await db.insert(planFixtureIntelligence).values(values.slice(offset, offset + 4));
+  // Keep writes below D1's bound-parameter ceiling as the intelligence
+  // schema evolves with visual provenance fields.
+  for (let offset = 0; offset < values.length; offset += 3) {
+    await db.insert(planFixtureIntelligence).values(values.slice(offset, offset + 3));
   }
 }
 
@@ -107,6 +121,7 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
     unitNumber: planFixtureIntelligence.unitNumber,
     unitType: planFixtureIntelligence.unitType,
     room: planFixtureIntelligence.room,
+    recordRole: planFixtureIntelligence.recordRole,
     fixtureType: planFixtureIntelligence.fixtureType,
     fixtureSubtype: planFixtureIntelligence.fixtureSubtype,
     orientation: planFixtureIntelligence.orientation,
@@ -119,6 +134,11 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
     pageNumber: planPages.pageNumber,
     sheetNumber: planFixtureIntelligence.sheetNumber,
     sheetTitle: planFixtureIntelligence.sheetTitle,
+    boundingRegion: planFixtureIntelligence.boundingRegion,
+    analysisProvider: planFixtureIntelligence.analysisProvider,
+    analysisModel: planFixtureIntelligence.analysisModel,
+    analysisVersion: planFixtureIntelligence.analysisVersion,
+    sourceRevision: planFixtureIntelligence.sourceRevision,
   }).from(planFixtureIntelligence)
     .innerJoin(planPages, eq(planPages.id, planFixtureIntelligence.pageId))
     .innerJoin(planFiles, eq(planFiles.id, planFixtureIntelligence.fileId))
@@ -132,13 +152,14 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
   // Keep every orientation for the selected fixture type so a left/right
   // question can report the complete LEFT_HAND / RIGHT_HAND / UNKNOWN split.
   const targetRows = allRows.filter((row) => !filters.fixtureType || row.fixtureType === filters.fixtureType);
-  const directRows = targetRows.filter((row) => locationMatches(row) && (row.unitNumber || !row.unitType));
+  const directRows = targetRows.filter((row) => locationMatches(row) && row.recordRole === "INSTALLED_INSTANCE");
 
   // Typical-unit sheets define fixture attributes once; overall floor plans
   // establish which real units use that type. Join those two saved facts here
   // instead of asking a model to rediscover or multiply them per question.
-  const templates = targetRows.filter((row) => row.unitType && !row.unitNumber);
-  const inventory = allRows.filter((row) => row.fixtureType === "bathroom_group" && row.unitType && row.unitNumber && locationMatches(row));
+  const templates = targetRows.filter((row) => row.unitType && row.recordRole === "UNIT_TYPE_TEMPLATE");
+  const inventory = allRows.filter((row) => row.fixtureType === "bathroom_group" && row.unitType
+    && (row.recordRole === "INSTALLED_INSTANCE" || row.recordRole === "EXPLICIT_MULTIPLIER") && locationMatches(row));
   const bestTemplate = new Map<string, typeof allRows[number]>();
   for (const row of templates) {
     const key = [row.unitType.toLowerCase(), row.fixtureType, row.orientation, row.fixtureSubtype.toLowerCase()].join("|");

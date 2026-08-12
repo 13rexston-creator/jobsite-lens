@@ -13,11 +13,12 @@ test("fixture analysis persists reusable location and tub orientation evidence",
   assert.match(migration, /CREATE TABLE `plan_fixture_intelligence`/);
   assert.match(takeoff, /valve\/drain end/);
   assert.match(takeoff, /replacePageFixtureIntelligence/);
-  assert.match(takeoff, /max_output_tokens: 12_000/);
+  assert.match(takeoff, /configuredVlmProvider/);
+  assert.match(takeoff, /boundingRegion/);
   assert.match(intelligence, /LEFT_HAND/);
   assert.match(intelligence, /RIGHT_HAND/);
   assert.match(intelligence, /UNKNOWN/);
-  assert.match(intelligence, /offset \+= 4/);
+  assert.match(intelligence, /offset \+= 3/);
   assert.match(intelligence, /Keep every orientation/);
 });
 
@@ -30,4 +31,5 @@ test("simple fixture questions bypass giant model context and MCP fallbacks are 
   assert.match(mcp, /const MAX_FETCH_TEXT = 12_000/);
   assert.match(mcp, /const MAX_FETCH_PAGES = 8/);
   assert.match(mcp, /registerTool\("query_plan_intelligence"/);
+  assert.match(mcp, /requestedPdfPage/);
 });

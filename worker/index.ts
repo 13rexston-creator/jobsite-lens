@@ -13,6 +13,14 @@ interface Env {
       };
     };
   };
+  OPENAI_API_KEY?: string;
+  GOOGLE_API_KEY?: string;
+  OPENAI_VLM_MODEL?: string;
+  OPENAI_VLM_STRONG_MODEL?: string;
+  GEMINI_VLM_MODEL?: string;
+  GEMINI_VLM_STRONG_MODEL?: string;
+  PLAN_VLM_PROVIDER?: string;
+  PLAN_ANALYSIS_VERSION?: string;
 }
 
 interface ExecutionContext {

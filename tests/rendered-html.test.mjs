@@ -114,15 +114,13 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
   // page-image path uses high-detail vision; deterministic cached aggregation
   // keeps validation sheets and duplicate disciplines out of project totals.
   assert.match(takeoffRoute, /export async function getFixtureTakeoffState/);
-  assert.match(takeoffRoute, /OPENAI_TAKEOFF_MODEL \?\? "gpt-5\.6-luna"/);
-  assert.equal((takeoffRoute.match(/openAIRequest\("\/responses"/g) ?? []).length, 1);
-  assert.equal((takeoffRoute.match(/type: "input_image"/g) ?? []).length, 1);
-  assert.match(takeoffRoute, /detail: "high"/);
-  assert.match(takeoffRoute, /type: "json_schema"/);
-  assert.match(takeoffRoute, /strict: true/);
+  assert.match(takeoffRoute, /configuredVlmProvider/);
+  assert.match(takeoffRoute, /provider\.analyzePlanPage/);
+  assert.match(takeoffRoute, /kind: "full_sheet"/);
+  assert.match(takeoffRoute, /schema: PAGE_TAKEOFF_SCHEMA/);
   assert.match(takeoffRoute, /eq\(planPages\.isCandidate, true\)/);
   assert.match(takeoffRoute, /isNotNull\(planPages\.storageKey\)/);
-  assert.match(takeoffRoute, /inArray\(planPages\.analysisStatus, \["pending", "failed"\]\)/);
+  assert.match(takeoffRoute, /requestedPageId \? \["pending", "failed", "complete"\] : \["pending", "failed"\]/);
   assert.match(takeoffRoute, /claimNextPage[\s\S]*?fixturePagePrioritySql[\s\S]*?\.limit\(1\)/);
   assert.match(takeoffRoute, /priorityRemainingPages/);
   assert.match(takeoffRoute, /blockedCandidatePages/);

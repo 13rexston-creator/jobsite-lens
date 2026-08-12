@@ -21,7 +21,6 @@ type LibraryFile = {
   preparedPageCount?: number;
 };
 type UploadProgress = { name: string; state: "waiting" | "uploading" | "done" | "failed"; message?: string };
-type VisualVerification = { status: "checked" | "partial" | "size_limited" | "unavailable" | "not_run"; checkedFiles: string[]; skippedFiles: string[] };
 type PagePreparation = {
   state: "checking" | "loading" | "processing" | "done" | "failed";
   completed: number;
@@ -131,26 +130,12 @@ type ChatGPTConnection = {
   createdAt?: number | null;
   lastUsedAt?: number | null;
 };
-type AnswerCostProfile = "cached_no_api" | "no_api" | "single_search" | "";
-type LibraryAnswerSource = { key: string; label: string; url?: string };
-type LibraryChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  sources: LibraryAnswerSource[];
-  suggestedVisuals: LibraryAnswerSource[];
-  costProfile: AnswerCostProfile;
-  visualVerification: VisualVerification | null;
-};
 
 const MAX_RENDER_DIMENSION = 2400;
 const PAGE_JPEG_QUALITY = 0.8;
 const MAX_EXTRACTED_TEXT = 75_000;
 const MAX_TAKEOFF_PAGES_PER_RUN = 5;
 const MAX_TAKEOFF_BULK_BATCH = 25;
-const MAX_LIBRARY_CHAT_HISTORY_MESSAGES = 8;
-const MAX_LIBRARY_CHAT_HISTORY_LENGTH = 16_000;
-const MAX_LIBRARY_CHAT_MESSAGE_LENGTH = 6_000;
 const VISUAL_PAGE_TERMS = /\b(?:floor\s*plan|unit\s*plan|bath(?:room)?s?|restrooms?|toilets?|water\s*closets?|lavator(?:y|ies)|sinks?|urinals?|showers?|tubs?|plumb(?:ing)?|fixtures?|enlarged\s*plan|unit\s*matrix|code|zoning|occupant|fixture\s*table|schedules?|legends?|dwv|water\s*plan|risers?)\b/i;
 
 let pdfJsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
@@ -257,55 +242,6 @@ function filePagesArePrepared(file: LibraryFile) {
   return Boolean(file.pageCount && file.preparedPageCount !== undefined && file.preparedPageCount >= file.pageCount);
 }
 
-function answerSourcesFromPayload(value: unknown): LibraryAnswerSource[] {
-  if (!Array.isArray(value)) return [];
-  const unique = new Map<string, LibraryAnswerSource>();
-  for (const item of value) {
-    if (!item || typeof item !== "object") continue;
-    const source = item as { fileId?: unknown; filename?: unknown; pageId?: unknown; pageNumber?: unknown; sheetNumber?: unknown; imageUrl?: unknown };
-    const filename = typeof source.filename === "string" ? source.filename.trim() : "";
-    if (!filename) continue;
-    const pageNumber = typeof source.pageNumber === "number" && Number.isSafeInteger(source.pageNumber) && source.pageNumber > 0 ? source.pageNumber : null;
-    const sheetNumber = typeof source.sheetNumber === "string" ? source.sheetNumber.trim() : "";
-    const url = typeof source.imageUrl === "string" && source.imageUrl.startsWith("/api/plan-library/") ? source.imageUrl : undefined;
-    const details = [pageNumber ? `page ${pageNumber}` : "", sheetNumber ? `sheet ${sheetNumber}` : ""].filter(Boolean).join(" · ");
-    const label = details ? `${filename} · ${details}` : filename;
-    const key = `${typeof source.pageId === "string" ? source.pageId : typeof source.fileId === "string" ? source.fileId : filename}:${label}`;
-    if (!unique.has(key)) unique.set(key, { key, label, url });
-  }
-  return [...unique.values()];
-}
-
-function answerCostLabel(profile: AnswerCostProfile) {
-  if (profile === "cached_no_api") return "Cached visual takeoff · no new API call";
-  if (profile === "no_api") return "No API call used";
-  if (profile === "single_search") return "One indexed plan search · uses Jobsite Lens API credits";
-  return "";
-}
-
-function boundedChatHistory(messages: LibraryChatMessage[]) {
-  const newest: Array<{ role: "user" | "assistant"; content: string }> = [];
-  let used = 0;
-  for (let index = messages.length - 1; index >= 0 && newest.length < MAX_LIBRARY_CHAT_HISTORY_MESSAGES; index -= 1) {
-    const message = messages[index];
-    const remaining = MAX_LIBRARY_CHAT_HISTORY_LENGTH - used;
-    if (remaining <= 0) break;
-    const content = message.content.trim().slice(0, Math.min(MAX_LIBRARY_CHAT_MESSAGE_LENGTH, remaining));
-    if (!content) continue;
-    newest.push({ role: message.role, content });
-    used += content.length;
-  }
-  return newest.reverse();
-}
-
-function verificationNote(verification: VisualVerification | null) {
-  if (!verification || verification.status === "checked") return "";
-  if (verification.status === "partial") return "Visual verification was partial. Prepare the relevant plan pages so fixture takeoffs can use cached sheet images.";
-  if (verification.status === "size_limited") return "This answer used searchable plan text. Prepare the relevant plan pages for cached visual takeoffs.";
-  if (verification.status === "unavailable") return "This answer used searchable plan text, but visual sheet verification was temporarily unavailable. Verify dimensions, symbols, and geometry against the drawings.";
-  return "This answer used searchable plan text. Suggested sheet previews are navigation aids, not exact cited pages or model-verified markups; verify dimensions, symbols, and geometry against the drawings.";
-}
-
 export default function PlanLibrary() {
   const [projects, setProjects] = useState<LibraryProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -314,9 +250,6 @@ export default function PlanLibrary() {
   const [creatingProject, setCreatingProject] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
-  const [question, setQuestion] = useState("");
-  const [chatMessages, setChatMessages] = useState<LibraryChatMessage[]>([]);
-  const [busy, setBusy] = useState(false);
   const [retryingFileId, setRetryingFileId] = useState("");
   const [pagePreparation, setPagePreparation] = useState<Record<string, PagePreparation>>({});
   const [prepareAllBusy, setPrepareAllBusy] = useState(false);
@@ -341,7 +274,7 @@ export default function PlanLibrary() {
   const processingCount = files.filter((file) => file.status === "processing" || file.status === "uploading").length;
   const hasActiveUploads = uploads.some((upload) => upload.state === "waiting" || upload.state === "uploading");
   const hasActivePreparation = Object.values(pagePreparation).some((progress) => ["checking", "loading", "processing"].includes(progress.state));
-  const projectSelectionLocked = hasActiveUploads || hasActivePreparation || takeoffBusy || busy || largeLocalBusy || prepareAllBusy || creatingProject || Boolean(retryingFileId);
+  const projectSelectionLocked = hasActiveUploads || hasActivePreparation || takeoffBusy || largeLocalBusy || prepareAllBusy || creatingProject || Boolean(retryingFileId);
   const preparableStoredFiles = files.filter((file) =>
     file.originalStored !== false && file.status !== "stored_pages" &&
     (file.status === "stored" || file.status === "ready" || file.status === "failed") &&
@@ -896,68 +829,6 @@ export default function PlanLibrary() {
     await loadProjects();
   }
 
-  async function askLibrary(event: React.FormEvent) {
-    event.preventDefault();
-    if (!selectedProjectId || !question.trim()) return;
-    const projectId = selectedProjectId;
-    const submittedQuestion = question.trim();
-    const history = boundedChatHistory(chatMessages);
-    const userMessageId = crypto.randomUUID();
-    setBusy(true);
-    setError("");
-    setQuestion("");
-    setChatMessages((current) => [...current, {
-      id: userMessageId,
-      role: "user",
-      content: submittedQuestion,
-      sources: [],
-      suggestedVisuals: [],
-      costProfile: "",
-      visualVerification: null,
-    }]);
-    try {
-      const response = await fetch("/api/plan-library/ask", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId, question: submittedQuestion, history }),
-      });
-      const data = await response.json() as {
-        error?: string;
-        answer?: string;
-        sources?: unknown;
-        suggestedVisuals?: unknown;
-        costProfile?: AnswerCostProfile;
-        visualVerification?: VisualVerification;
-        takeoff?: TakeoffPayload;
-      };
-      if (!response.ok) throw new Error(data.error || "Could not answer from these plans.");
-      if (selectedProjectIdRef.current !== projectId) return;
-      const answerText = data.answer ?? "No answer was returned from these plans.";
-      const answerSources = answerSourcesFromPayload(data.sources);
-      const suggestedVisuals = answerSourcesFromPayload(data.suggestedVisuals);
-      const costProfile = data.costProfile ?? "";
-      const verification = data.visualVerification ?? null;
-      setChatMessages((current) => [...current, {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: answerText,
-        sources: answerSources,
-        suggestedVisuals,
-        costProfile,
-        visualVerification: verification,
-      }]);
-      if (data.takeoff) setTakeoff(takeoffFromPayload(data.takeoff));
-    } catch (cause) {
-      if (selectedProjectIdRef.current === projectId) {
-        setChatMessages((current) => current.filter((message) => message.id !== userMessageId));
-        setQuestion(submittedQuestion);
-        setError(cause instanceof Error ? cause.message : "Could not answer from these plans.");
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function retryIndex(fileId: string) {
     if (takeoffBusy) return;
     setRetryingFileId(fileId);
@@ -985,7 +856,7 @@ export default function PlanLibrary() {
   return (
     <section className="library" id="drawings" aria-labelledby="library-title">
       <div className="library-heading">
-        <div><p>PLAN LIBRARY</p><h2 id="library-title">Upload plans. Ask the whole project.</h2><span>Bring PDFs from Procore, email, consultants, or your computer. Jobsite Lens keeps each project searchable in one place.</span></div>
+        <div><p>JOB PLAN LIBRARY</p><h2 id="library-title">Create jobs. Prepare plans. Use them in ChatGPT.</h2><span>Keep each job&apos;s plans, searchable drawing text, visual sheets, and takeoffs together for the Jobsite Lens tools in ChatGPT.</span></div>
         <div className="library-badge"><i /> {readyCount ? `${readyCount} searchable PDF${readyCount === 1 ? "" : "s"}` : "Ready for plans"}</div>
       </div>
 
@@ -997,9 +868,9 @@ export default function PlanLibrary() {
               {projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.fileCount ?? 0} files</option>)}
             </select>
           </div>
-          <form className="new-library-project" onSubmit={createProject}>
-            <input value={newProjectName} disabled={projectSelectionLocked} onChange={(event) => setNewProjectName(event.target.value)} placeholder="New project name" aria-label="New plan project name" maxLength={100} />
-            <button type="submit" disabled={projectSelectionLocked || !newProjectName.trim()}>{creatingProject ? "Creating…" : "+ Add project"}</button>
+          <form className="new-library-project" id="plan-library-new-job" onSubmit={createProject}>
+            <input value={newProjectName} disabled={projectSelectionLocked} onChange={(event) => setNewProjectName(event.target.value)} placeholder="New job name" aria-label="New job name" maxLength={100} />
+            <button type="submit" disabled={projectSelectionLocked || !newProjectName.trim()}>{creatingProject ? "Creating job…" : "+ Add Job"}</button>
           </form>
 
           <div
@@ -1043,46 +914,15 @@ export default function PlanLibrary() {
           <p className="preparation-cost-note">Prepared sheets and takeoff results are cached. Repeat questions can reuse them instead of analyzing the same pages—and spending API credits—again.</p>
         </div>
 
-        <div className="library-chat">
-          <section className="quick-answer in-app-primary" aria-labelledby="plan-question-title">
-            <form onSubmit={askLibrary}>
-              <div className="library-chat-head">
-                <span className="lens-avatar">JL</span>
-                <div><strong id="plan-question-title">Ask Jobsite Lens</strong><small>Main plan Q&amp;A · answers stay tied to this project and its source drawings</small></div>
-                {chatMessages.length > 0 && <button className="clear-plan-chat" type="button" disabled={busy} onClick={() => setChatMessages([])}>Clear</button>}
-              </div>
-              <p className="library-cost-guide"><strong>Cost:</strong> Saved bathroom and fixture takeoffs answer without a new API call. Other questions run one low-cost indexed plan search and use Jobsite Lens API credits.</p>
-              {chatMessages.length > 0 && <div className="library-thread" aria-live="polite">
-                {chatMessages.map((message) => <article className={`library-message ${message.role}`} key={message.id}>
-                  <div><strong>{message.role === "user" ? "You" : "Jobsite Lens"}</strong>{message.role === "assistant" && answerCostLabel(message.costProfile) && <em className={`answer-cost ${message.costProfile}`}>{answerCostLabel(message.costProfile)}</em>}</div>
-                  <p>{message.content}</p>
-                  {verificationNote(message.visualVerification) && <aside className="visual-verification-note">{verificationNote(message.visualVerification)}</aside>}
-                  {message.sources.length > 0 && <footer><strong>Sources used</strong><div>{message.sources.map((source) => source.url
-                    ? <a className="answer-source-card" key={source.key} href={source.url} target="_blank" rel="noreferrer"><img src={source.url} alt={`Prepared plan source ${source.label}`} /><span>{source.label}<small>Open prepared sheet ↗</small></span></a>
-                    : <span className="answer-source-pill" key={source.key}>{source.label}</span>)}</div></footer>}
-                  {message.suggestedVisuals.length > 0 && <footer className="suggested-visuals"><strong>Suggested prepared sheets · open and verify</strong><div>{message.suggestedVisuals.map((source) => source.url
-                    ? <a className="answer-source-card" key={source.key} href={source.url} target="_blank" rel="noreferrer"><img src={source.url} alt={`Suggested prepared plan sheet ${source.label}`} /><span>{source.label}<small>Suggested text match · verify sheet ↗</small></span></a>
-                    : <span className="answer-source-pill" key={source.key}>{source.label}</span>)}</div></footer>}
-                </article>)}
-                {busy && <article className="library-message assistant pending"><div><strong>Jobsite Lens</strong></div><p>Searching this project’s plans…</p></article>}
-              </div>}
-              <label htmlFor="library-question">{chatMessages.length ? "Follow up about" : "Question about"} {selectedProject?.name ?? "this project"}</label>
-              <textarea id="library-question" value={question} onChange={(event) => setQuestion(event.target.value)} rows={4} placeholder={chatMessages.length ? "Ask a follow-up about the answer or its source sheets." : "Example: Count the bathrooms and plumbing fixtures shown on the floor plans."} />
-              <button type="submit" disabled={busy || !selectedProjectId || !question.trim()}>{busy ? "Searching the plans…" : chatMessages.length ? "Ask follow-up" : "Ask the plans"}<span>→</span></button>
-              {!readyCount && <p className="library-note">General questions need at least one “Searchable” PDF. Cached bathroom and fixture questions can still be asked now.</p>}
-              {chatMessages.length === 0 && <div className="library-prompts"><strong>Try asking</strong><button type="button" onClick={() => setQuestion("Count the bathrooms and list every plumbing fixture type shown on the plans.")}>Count bathrooms and fixtures</button><button type="button" onClick={() => setQuestion("Find coordination conflicts, inconsistent notes, or missing details across the plans.")}>Find coordination conflicts</button><button type="button" onClick={() => setQuestion("What information should the field team verify before starting work?")}>What should the field verify?</button></div>}
-            </form>
-          </section>
-
-          {error && <div className="plan-error" role="alert">{error}{/credits|quota|billing/i.test(error) && <a href="https://platform.openai.com/settings/organization/billing" target="_blank" rel="noreferrer">Add OpenAI API credits →</a>}</div>}
-
+        <div className="chatgpt-integration">
+          {error && <div className="plan-error" role="alert">{error}</div>}
           <section className={`chatgpt-primary ${chatGPTEndpointReached ? "connected" : ""}`}>
-            <div className="chatgpt-primary-head"><span className="chatgpt-mark">✦</span><div><small>OPTIONAL CHATGPT CONNECTION · OWNER PREVIEW</small><h3>Use Jobsite Lens in ChatGPT</h3></div><em>{chatGPTEndpointReached ? "Endpoint reached" : chatGPTConfigured ? "Setup required" : "Optional"}</em></div>
+            <div className="chatgpt-primary-head"><span className="chatgpt-mark">✦</span><div><small>MAIN AI EXPERIENCE · CHATGPT</small><h3>Use this job in ChatGPT</h3></div><em>{chatGPTEndpointReached ? "Endpoint reached" : chatGPTConfigured ? "Setup required" : "Connect"}</em></div>
             <p>{chatGPTEndpointReached
               ? "The private endpoint was reached. That confirms only that the setup URL responded, not that Jobsite Lens is installed or enabled in ChatGPT. Check Plugins, then add Jobsite Lens from the Tools menu in a new conversation."
               : chatGPTConfigured
                 ? "A private access URL exists, but the endpoint has not recorded a request. Create a replacement URL if needed, then finish the Plugins setup steps below."
-                : "Create a private setup URL to use this plan library from your own ChatGPT account. This is an optional owner preview until OAuth and directory review are complete."}</p>
+                : "Create a private setup URL so ChatGPT can search your jobs, fetch drawing metadata, view prepared plan pages, and read saved takeoffs through Jobsite Lens tools."}</p>
             <div className="chatgpt-primary-actions">
               {chatGPTEndpointReached
                 ? <><a href="https://chatgpt.com/" target="_blank" rel="noreferrer">New chat — add Jobsite Lens in Tools <span>↗</span></a><a className="secondary" href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">Manage plugin</a></>

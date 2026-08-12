@@ -30,7 +30,6 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
     projectsRoute,
     filesRoute,
     retryRoute,
-    askRoute,
     takeoffRoute,
     pageRegisterRoute,
     filePagesRoute,
@@ -45,7 +44,6 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
     readFile(new URL("../app/api/plan-library/projects/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/files/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/files/[fileId]/route.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/api/plan-library/ask/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/takeoff/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/pages/register/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan-library/files/[fileId]/pages/route.ts", import.meta.url), "utf8"),
@@ -57,7 +55,9 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.match(library, /Upload plans\. Ask the whole project\./);
+  assert.match(library, /Create jobs\. Prepare plans\. Use them in ChatGPT\./);
+  assert.match(library, /\+ Add Job/);
+  assert.doesNotMatch(library, /Ask Jobsite Lens|Ask the plans|library-question/);
   assert.match(library, /multiple/);
   assert.match(library, /Merced Creek/);
   assert.match(library, /searchParams\.set\("index", "false"\)/);
@@ -80,37 +80,8 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
   assert.match(retryRoute, /const \[claimed\] = await db\.update\(planFiles\)\.set\(\{[\s\S]*?status: "uploading"[\s\S]*?\}\)\.where\(and\(\s*eq\(planFiles\.id, file\.id\),\s*eq\(planFiles\.ownerUserId, user\.userId\),\s*inArray\(planFiles\.status, \["stored", "failed"\]\),\s*\)\)\.returning\(\{ id: planFiles\.id \}\)/);
   assert.match(retryRoute, /if \(!claimed\)/);
 
-  // General questions make one low-reasoning Luna request over the existing
-  // vector store. The route must never resend whole PDFs for every question.
-  assert.match(askRoute, /const model = planRuntime\(\)\.OPENAI_PLAN_MODEL \?\? "gpt-5\.6-luna"/);
-  assert.equal((askRoute.match(/openAIRequest\("\/responses"/g) ?? []).length, 1);
-  assert.equal((askRoute.match(/type: "file_search"/g) ?? []).length, 1);
-  assert.match(askRoute, /type: "file_search"/);
-  assert.match(askRoute, /vector_store_ids/);
-  assert.match(askRoute, /max_num_results: 10/);
-  assert.match(askRoute, /reasoning: \{ effort: "low" \}/);
-  assert.match(askRoute, /costProfile: "single_search"/);
-  assert.doesNotMatch(askRoute, /type: "input_file"/);
-  assert.doesNotMatch(askRoute, /detail: "high"/);
-  assert.match(askRoute, /const safetyIdentifier = await planSafetyIdentifier\(user\.userId\)/);
-  assert.equal((askRoute.match(/safety_identifier: safetyIdentifier/g) ?? []).length, 1);
-  assert.doesNotMatch(askRoute, /safety_identifier: `jobsite-lens-\$\{user\.userId\}`/);
   assert.match(planLibrary, /crypto\.subtle\.digest\("SHA-256"/);
   assert.match(planLibrary, /return `jobsite-lens-\$\{hex\.slice\(0, 48\)\}`/);
-
-  // Fixture questions are answered from the saved page takeoff before the
-  // general OpenAI request, so repeat counts consume no additional API call.
-  const fixtureBranchStart = askRoute.indexOf("if (isFixtureTakeoffIntent(question, history))");
-  const generalSearchStart = askRoute.indexOf("if (!project.vectorStoreId)");
-  assert.ok(fixtureBranchStart >= 0 && generalSearchStart > fixtureBranchStart);
-  assert.doesNotMatch(askRoute.slice(fixtureBranchStart, generalSearchStart), /openAIRequest/);
-  assert.match(askRoute, /getFixtureTakeoffState\(user\.userId, project\)/);
-  assert.match(askRoute, /kind: "fixture_takeoff_cached"/);
-  assert.match(askRoute, /costProfile: "cached_no_api"/);
-  assert.match(askRoute, /costProfile: "no_api"/);
-  assert.match(askRoute, /visualVerification/);
-  assert.match(askRoute, /"checked"/);
-  assert.match(askRoute, /"partial"/);
 
   // Large local packages register without storing the original, then upload
   // only bounded candidate-page JPEGs and extracted text for resumable analysis.
@@ -165,10 +136,10 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
   assert.match(takeoffRoute, /status: 402/);
   assert.match(takeoffRoute, /deferred: true/);
 
-  // The optional ChatGPT owner preview issues a revocable, hashed private
-  // setup URL and does not claim connection before the endpoint is reached.
-  assert.match(library, /OPTIONAL CHATGPT CONNECTION · OWNER PREVIEW/);
-  assert.match(library, /<h3>Use Jobsite Lens in ChatGPT<\/h3>/);
+  // ChatGPT is the only conversational AI surface. Its owner preview issues a
+  // revocable, hashed private setup URL without claiming a completed install.
+  assert.match(library, /MAIN AI EXPERIENCE · CHATGPT/);
+  assert.match(library, /<h3>Use this job in ChatGPT<\/h3>/);
   assert.match(library, /Create setup URL/);
   assert.match(library, /ChatGPT Developer Mode/);
   assert.match(library, /add Jobsite Lens from the Tools menu/);
@@ -189,7 +160,6 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
   assert.match(chatGPTConnection, /\^jlmcp_\[A-Za-z0-9_-\]\{43\}\$/);
   assert.doesNotMatch(chatGPTConnectionRoute, /tokenHash: token[,}]/);
 
-  assert.match(library, /visualVerification/);
   assert.match(hosting, /"r2": "PLANS"/);
   assert.match(schema, /plan_projects/);
   assert.match(schema, /plan_files/);

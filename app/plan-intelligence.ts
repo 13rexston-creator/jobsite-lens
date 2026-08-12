@@ -129,8 +129,9 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
 
   const contains = (value: string, filter: string) => !filter || value.toLowerCase().includes(filter.toLowerCase());
   const locationMatches = (row: typeof allRows[number]) => contains(row.building, building) && contains(row.level, level) && contains(row.unitNumber, unitNumber);
-  const targetRows = allRows.filter((row) => (!filters.fixtureType || row.fixtureType === filters.fixtureType)
-    && (!filters.orientation || row.orientation === filters.orientation));
+  // Keep every orientation for the selected fixture type so a left/right
+  // question can report the complete LEFT_HAND / RIGHT_HAND / UNKNOWN split.
+  const targetRows = allRows.filter((row) => !filters.fixtureType || row.fixtureType === filters.fixtureType);
   const directRows = targetRows.filter((row) => locationMatches(row) && (row.unitNumber || !row.unitType));
 
   // Typical-unit sheets define fixture attributes once; overall floor plans

@@ -70,6 +70,12 @@ type TakeoffProgress = {
   totalPages: number;
   candidatePages: number;
   preparedCandidatePages?: number;
+  priorityCandidatePages?: number;
+  priorityCompletePages?: number;
+  priorityRemainingPages?: number;
+  analyzableRemainingPages?: number;
+  blockedCandidatePages?: number;
+  retryableFailedPages?: number;
   pendingPages: number;
   processingPages: number;
   completePages: number;
@@ -110,7 +116,8 @@ type TakeoffResult = {
 type TakeoffPayload = {
   error?: string;
   processed?: boolean;
-  page?: unknown;
+  blocked?: boolean;
+  page?: { fileId?: string } | null;
   project?: { id: string; name: string };
   progress?: TakeoffProgress;
   result?: TakeoffResult;
@@ -131,6 +138,7 @@ type LibraryChatMessage = {
   role: "user" | "assistant";
   content: string;
   sources: LibraryAnswerSource[];
+  suggestedVisuals: LibraryAnswerSource[];
   costProfile: AnswerCostProfile;
   visualVerification: VisualVerification | null;
 };
@@ -139,6 +147,7 @@ const MAX_RENDER_DIMENSION = 2400;
 const PAGE_JPEG_QUALITY = 0.8;
 const MAX_EXTRACTED_TEXT = 75_000;
 const MAX_TAKEOFF_PAGES_PER_RUN = 5;
+const MAX_TAKEOFF_BULK_BATCH = 25;
 const MAX_LIBRARY_CHAT_HISTORY_MESSAGES = 8;
 const MAX_LIBRARY_CHAT_HISTORY_LENGTH = 16_000;
 const MAX_LIBRARY_CHAT_MESSAGE_LENGTH = 6_000;
@@ -294,7 +303,7 @@ function verificationNote(verification: VisualVerification | null) {
   if (verification.status === "partial") return "Visual verification was partial. Prepare the relevant plan pages so fixture takeoffs can use cached sheet images.";
   if (verification.status === "size_limited") return "This answer used searchable plan text. Prepare the relevant plan pages for cached visual takeoffs.";
   if (verification.status === "unavailable") return "This answer used searchable plan text, but visual sheet verification was temporarily unavailable. Verify dimensions, symbols, and geometry against the drawings.";
-  return "This answer used searchable plan text. Any sheet previews are source references, not model-verified markups; verify dimensions, symbols, and geometry against the drawings.";
+  return "This answer used searchable plan text. Suggested sheet previews are navigation aids, not exact cited pages or model-verified markups; verify dimensions, symbols, and geometry against the drawings.";
 }
 
 export default function PlanLibrary() {
@@ -315,6 +324,7 @@ export default function PlanLibrary() {
   const [takeoff, setTakeoff] = useState<TakeoffResult | null>(null);
   const [takeoffBusy, setTakeoffBusy] = useState(false);
   const [takeoffBatchProcessed, setTakeoffBatchProcessed] = useState(0);
+  const [takeoffBatchLimit, setTakeoffBatchLimit] = useState(MAX_TAKEOFF_PAGES_PER_RUN);
   const [chatGPTConnection, setChatGPTConnection] = useState<ChatGPTConnection | null>(null);
   const [chatGPTSetupUrl, setChatGPTSetupUrl] = useState("");
   const [chatGPTBusy, setChatGPTBusy] = useState(false);
@@ -324,6 +334,7 @@ export default function PlanLibrary() {
   const fileInput = useRef<HTMLInputElement>(null);
   const largeLocalInput = useRef<HTMLInputElement>(null);
   const selectedProjectIdRef = useRef("");
+  const takeoffStopRef = useRef(false);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
   const readyCount = files.filter((file) => file.status === "ready").length;
@@ -345,6 +356,14 @@ export default function PlanLibrary() {
   // sheet thumbnail at once can download hundreds of high-resolution JPEGs.
   const takeoffSheets = (takeoff?.primaryScopes?.length ? takeoff.primaryScopes : takeoff?.sheets ?? []).slice(0, 12);
   const takeoffProgress = takeoff?.progress;
+  const priorityTakeoffRemaining = takeoffProgress?.priorityRemainingPages ?? 0;
+  const analyzableTakeoffRemaining = takeoffProgress?.analyzableRemainingPages ?? 0;
+  const blockedTakeoffPages = takeoffProgress?.blockedCandidatePages ?? 0;
+  const priorityBatchSize = Math.min(MAX_TAKEOFF_BULK_BATCH, priorityTakeoffRemaining);
+  const takeoffAttentionMessage = takeoff?.error ?? [
+    blockedTakeoffPages ? `${blockedTakeoffPages} candidate sheet${blockedTakeoffPages === 1 ? " needs" : "s need"} a new prepared image. Use Resume visual pages on the affected PDF, then continue the takeoff.` : "",
+    (takeoffProgress?.failedPages ?? 0) > 0 ? `${takeoffProgress?.failedPages} prepared sheet analysis failed and remains available to retry.` : "",
+  ].filter(Boolean).join(" ");
   const hasTakeoffResult = takeoffCounts.length > 0 || bathroomVisibleTotal > 0 || bathroomEstimatedTotal > 0;
   const chatGPTConfigured = Boolean(chatGPTConnection?.configured || chatGPTConnection?.createdAt);
   const chatGPTEndpointReached = Boolean(chatGPTConnection?.endpointReached || chatGPTConnection?.lastUsedAt);
@@ -747,38 +766,72 @@ export default function PlanLibrary() {
     }
   }
 
-  async function runTakeoff() {
+  async function runTakeoff(limit = MAX_TAKEOFF_PAGES_PER_RUN, priorityOnly = false) {
     if (!selectedProjectId || takeoffBusy || hasActivePreparation || largeLocalBusy || prepareAllBusy) return;
     const projectId = selectedProjectId;
+    takeoffStopRef.current = false;
     setTakeoffBusy(true);
     setTakeoffBatchProcessed(0);
+    setTakeoffBatchLimit(limit);
     setError("");
     try {
       // The worker analyzes one page per request. Keeping this sequential avoids
       // double claims and lets every response update the saved/cached progress.
       let processedPages = 0;
-      while (processedPages < MAX_TAKEOFF_PAGES_PER_RUN) {
+      while (processedPages < limit && !takeoffStopRef.current) {
         const response = await fetch("/api/plan-library/takeoff", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectId }),
+          body: JSON.stringify({ projectId, priorityOnly }),
         });
         const data = await response.json() as TakeoffPayload;
         const nextTakeoff = takeoffFromPayload(data);
         if (selectedProjectIdRef.current !== projectId) break;
         if (nextTakeoff) setTakeoff(nextTakeoff);
-        if (!response.ok) throw new Error(data.error || "Could not continue the fixture takeoff.");
+        if (!response.ok) {
+          if (data.blocked) {
+            const blockedFileId = data.page?.fileId;
+            if (blockedFileId) {
+              setPagePreparation((current) => {
+                const previous = current[blockedFileId];
+                if (!previous) return current;
+                return { ...current, [blockedFileId]: {
+                  ...previous,
+                  state: "failed",
+                  completed: Math.max(0, previous.completed - 1),
+                  rendered: Math.max(0, previous.rendered - 1),
+                  message: "A prepared page image was missing or invalid. Resume to rebuild it.",
+                } };
+              });
+            }
+            await loadFiles(projectId, true);
+          }
+          throw new Error(data.error || "Could not continue the fixture takeoff.");
+        }
         if (data.processed) {
           processedPages += 1;
           setTakeoffBatchProcessed(processedPages);
         }
-        if (!data.processed || !data.progress || data.progress.remainingPages <= 0) break;
+        const remaining = priorityOnly ? data.progress?.priorityRemainingPages : data.progress?.analyzableRemainingPages;
+        if (!data.processed || !data.progress || !remaining || takeoffStopRef.current) break;
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not continue the fixture takeoff.");
     } finally {
       setTakeoffBusy(false);
     }
+  }
+
+  function runPriorityTakeoffBatch() {
+    const remaining = takeoffProgress?.priorityRemainingPages ?? 0;
+    if (!remaining || takeoffBusy) return;
+    const limit = Math.min(MAX_TAKEOFF_BULK_BATCH, remaining);
+    const approved = window.confirm(`Analyze ${limit} priority candidate sheet${limit === 1 ? "" : "s"} now?\n\nThis makes up to ${limit} paid high-detail vision call${limit === 1 ? "" : "s"}, one per sheet. Completed sheets are cached. Retrying a failed sheet may use another call. Keep this tab open—this is foreground work, not a background job.`);
+    if (approved) void runTakeoff(limit, true);
+  }
+
+  function stopTakeoffAfterCurrentSheet() {
+    takeoffStopRef.current = true;
   }
 
   async function createProject(event: React.FormEvent) {
@@ -813,7 +866,7 @@ export default function PlanLibrary() {
   }
 
   async function uploadFiles(chosen: File[]) {
-    if (!selectedProjectId || !chosen.length || hasActiveUploads) return;
+    if (!selectedProjectId || !chosen.length || hasActiveUploads || takeoffBusy) return;
     const pdfs = chosen.filter((file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"));
     if (!pdfs.length) {
       setError("Choose one or more PDF plan files.");
@@ -858,6 +911,7 @@ export default function PlanLibrary() {
       role: "user",
       content: submittedQuestion,
       sources: [],
+      suggestedVisuals: [],
       costProfile: "",
       visualVerification: null,
     }]);
@@ -871,6 +925,7 @@ export default function PlanLibrary() {
         error?: string;
         answer?: string;
         sources?: unknown;
+        suggestedVisuals?: unknown;
         costProfile?: AnswerCostProfile;
         visualVerification?: VisualVerification;
         takeoff?: TakeoffPayload;
@@ -879,6 +934,7 @@ export default function PlanLibrary() {
       if (selectedProjectIdRef.current !== projectId) return;
       const answerText = data.answer ?? "No answer was returned from these plans.";
       const answerSources = answerSourcesFromPayload(data.sources);
+      const suggestedVisuals = answerSourcesFromPayload(data.suggestedVisuals);
       const costProfile = data.costProfile ?? "";
       const verification = data.visualVerification ?? null;
       setChatMessages((current) => [...current, {
@@ -886,6 +942,7 @@ export default function PlanLibrary() {
         role: "assistant",
         content: answerText,
         sources: answerSources,
+        suggestedVisuals,
         costProfile,
         visualVerification: verification,
       }]);
@@ -902,6 +959,7 @@ export default function PlanLibrary() {
   }
 
   async function retryIndex(fileId: string) {
+    if (takeoffBusy) return;
     setRetryingFileId(fileId);
     setError("");
     try {
@@ -953,7 +1011,7 @@ export default function PlanLibrary() {
             <span className="upload-icon">↑</span>
             <strong>Drop plan PDFs here</strong>
             <small>Upload one or many files in batches. Each PDF can be up to 200 MB. After upload, prepare visual pages so Jobsite Lens can count what is drawn on the sheets.</small>
-            <button type="button" disabled={!selectedProjectId || hasActiveUploads} onClick={() => fileInput.current?.click()}>{hasActiveUploads ? "Uploading…" : "Choose PDF plans"}</button>
+            <button type="button" disabled={!selectedProjectId || hasActiveUploads || takeoffBusy} onClick={() => fileInput.current?.click()}>{hasActiveUploads ? "Uploading…" : "Choose PDF plans"}</button>
             <input ref={fileInput} hidden type="file" accept="application/pdf,.pdf" multiple onChange={(event) => uploadFiles(Array.from(event.target.files ?? []))} />
           </div>
 
@@ -975,7 +1033,7 @@ export default function PlanLibrary() {
               return <div className="library-file-row" key={file.id}>
                 {originalIsLocal ? <div className="library-file">{fileSurface}</div> : <a className="library-file" href={`/api/plan-library/files/${file.id}`} target="_blank" rel="noreferrer">{fileSurface}</a>}
                 <div className="library-file-actions">
-                  {(file.status === "failed" || file.status === "stored") && <button type="button" disabled={retryingFileId === file.id} onClick={() => retryIndex(file.id)}>{retryingFileId === file.id ? "Retrying…" : "Retry indexing"}</button>}
+                  {(file.status === "failed" || file.status === "stored") && <button type="button" disabled={retryingFileId === file.id || takeoffBusy} onClick={() => retryIndex(file.id)}>{retryingFileId === file.id ? "Retrying…" : "Retry indexing"}</button>}
                   {canPrepareStored && <button className="prepare-pages-button" type="button" disabled={hasActivePreparation || takeoffBusy || progress?.state === "done"} onClick={() => prepareStoredFile(file)}>{progress?.state === "done" ? "Pages prepared" : progress?.state === "failed" ? "Resume visual pages" : progress ? "Preparing…" : "Prepare visual pages"}</button>}
                 </div>
                 {progress && <div className={`page-preparation-progress ${progress.state}`} aria-live="polite"><div><strong>{progress.state === "done" ? "Visual pages ready" : progress.state === "failed" ? "Preparation paused" : progress.state === "checking" ? "Checking cache" : progress.state === "loading" ? "Opening PDF" : `Preparing page ${progress.currentPage ?? progress.completed + 1}`}</strong><span>{progress.total ? `${progress.completed} / ${progress.total}` : "Starting…"}</span></div><i><b style={{ width: progress.total ? `${Math.min(100, (progress.completed / progress.total) * 100)}%` : "5%" }} /></i><small>{progress.message} {progress.total ? `Cached: ${progress.rendered} visual · ${progress.skipped} text-only.` : ""}</small></div>}
@@ -1001,6 +1059,9 @@ export default function PlanLibrary() {
                   {verificationNote(message.visualVerification) && <aside className="visual-verification-note">{verificationNote(message.visualVerification)}</aside>}
                   {message.sources.length > 0 && <footer><strong>Sources used</strong><div>{message.sources.map((source) => source.url
                     ? <a className="answer-source-card" key={source.key} href={source.url} target="_blank" rel="noreferrer"><img src={source.url} alt={`Prepared plan source ${source.label}`} /><span>{source.label}<small>Open prepared sheet ↗</small></span></a>
+                    : <span className="answer-source-pill" key={source.key}>{source.label}</span>)}</div></footer>}
+                  {message.suggestedVisuals.length > 0 && <footer className="suggested-visuals"><strong>Suggested prepared sheets · open and verify</strong><div>{message.suggestedVisuals.map((source) => source.url
+                    ? <a className="answer-source-card" key={source.key} href={source.url} target="_blank" rel="noreferrer"><img src={source.url} alt={`Suggested prepared plan sheet ${source.label}`} /><span>{source.label}<small>Suggested text match · verify sheet ↗</small></span></a>
                     : <span className="answer-source-pill" key={source.key}>{source.label}</span>)}</div></footer>}
                 </article>)}
                 {busy && <article className="library-message assistant pending"><div><strong>Jobsite Lens</strong></div><p>Searching this project’s plans…</p></article>}
@@ -1044,9 +1105,10 @@ export default function PlanLibrary() {
       </div>
 
       <section className="fixture-takeoff" aria-labelledby="fixture-takeoff-title">
-        <div className="fixture-takeoff-head"><div><p>VISUAL TAKEOFF</p><h3 id="fixture-takeoff-title">Bathroom &amp; fixture counts</h3><span>Counts visible symbols and keeps matrix-derived quantities separate. Each click analyzes up to {MAX_TAKEOFF_PAGES_PER_RUN} prepared sheets, then pauses so you control API spending.</span></div><button type="button" disabled={!selectedProjectId || takeoffBusy || hasActivePreparation || largeLocalBusy || prepareAllBusy} onClick={runTakeoff}>{takeoffBusy ? `Counting fixtures… ${takeoffBatchProcessed}/${MAX_TAKEOFF_PAGES_PER_RUN}` : (takeoffProgress?.remainingPages ?? 0) > 0 ? `${takeoffProgress?.completePages ? "Continue" : "Run"} takeoff (${takeoffProgress?.remainingPages} sheets remain)` : hasTakeoffResult ? "Refresh cached takeoff" : "Run fixture takeoff"}</button></div>
-        {(takeoffBusy || Boolean(takeoffProgress?.processingPages)) && <div className="takeoff-processing" aria-live="polite"><i /><span><strong>Reviewing prepared plan sheets</strong><small>{takeoff?.summary ?? "The result will appear here as each page is saved."}</small></span></div>}
-        {(takeoff?.status === "failed" || takeoffProgress?.status === "needs_attention") && <div className="takeoff-failed">{takeoff?.error ?? `${takeoffProgress?.failedPages ?? 0} prepared sheet(s) need attention. Continue the takeoff to retry them.`}</div>}
+        <div className="fixture-takeoff-head"><div><p>VISUAL TAKEOFF</p><h3 id="fixture-takeoff-title">Bathroom &amp; fixture counts</h3><span>Overall building floor plans run first, followed by unit, plumbing, matrix, and schedule sheets. Scanned/no-text, life-safety, and other candidates run later; covers and general notes run last. Runs happen in this open tab; each sheet uses one paid high-detail vision call and completed results stay cached.</span></div><div className="takeoff-actions"><button type="button" disabled={!selectedProjectId || takeoffBusy || hasActivePreparation || largeLocalBusy || prepareAllBusy || !analyzableTakeoffRemaining} onClick={() => runTakeoff()}>{takeoffBusy ? `Analyzing… ${takeoffBatchProcessed}/${takeoffBatchLimit}` : analyzableTakeoffRemaining ? `Analyze next ${Math.min(MAX_TAKEOFF_PAGES_PER_RUN, analyzableTakeoffRemaining)}` : blockedTakeoffPages ? `Prepared sheets complete — ${blockedTakeoffPages} need images` : hasTakeoffResult ? "Prepared sheets complete" : "No prepared sheets"}</button>{priorityTakeoffRemaining > 0 && !takeoffBusy && <button className="bulk" type="button" disabled={hasActivePreparation || largeLocalBusy || prepareAllBusy} onClick={runPriorityTakeoffBatch}>{priorityTakeoffRemaining <= MAX_TAKEOFF_BULK_BATCH ? `Finish ${priorityTakeoffRemaining} priority candidates` : `Analyze next ${priorityBatchSize} of ${priorityTakeoffRemaining} priority candidates`}</button>}{takeoffBusy && <button className="stop" type="button" onClick={stopTakeoffAfterCurrentSheet}>Stop after current sheet</button>}</div></div>
+        {takeoffProgress && <p className="takeoff-queue-status">Priority candidates: {takeoffProgress.priorityCompletePages ?? 0} of {takeoffProgress.priorityCandidatePages ?? 0} complete · {priorityTakeoffRemaining} prepared and waiting{blockedTakeoffPages ? ` · ${blockedTakeoffPages} candidate sheet${blockedTakeoffPages === 1 ? "" : "s"} still need a prepared image` : ""}</p>}
+        {(takeoffBusy || Boolean(takeoffProgress?.processingPages)) && <div className="takeoff-processing" aria-live="polite"><i /><span><strong>Reviewing prepared plan sheets</strong><small>{takeoffBusy ? `${takeoffBatchProcessed} of up to ${takeoffBatchLimit} completed in this approved batch. Keep this tab open.` : takeoff?.summary ?? "The result will appear here as each page is saved."}</small></span></div>}
+        {(takeoff?.status === "failed" || takeoffProgress?.status === "needs_attention") && takeoffAttentionMessage && <div className="takeoff-failed">{takeoffAttentionMessage}</div>}
         {hasTakeoffResult ? <div className="takeoff-results">
           <div className="takeoff-total"><small>Visible bathroom rooms</small><strong>{bathroomVisibleTotal}</strong><small>Visible fixtures</small><strong>{takeoffVisibleTotal}</strong><span>Matrix-derived: {bathroomEstimatedTotal} rooms · {takeoffEstimatedTotal} fixtures. These are never added to visible counts.</span></div>
           <div className="takeoff-chart" aria-label="Visible fixture count chart">{takeoffCounts.map((item) => <div key={item.label}><span>{item.label}</span><i><b style={{ width: `${Math.max(4, (item.visibleCount / largestTakeoffCount) * 100)}%` }} /></i><strong>{item.visibleCount}</strong></div>)}</div>

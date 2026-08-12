@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { planFiles, planPages } from "../db/schema";
 
@@ -14,7 +14,7 @@ type PreparedPageRow = {
 };
 
 const MAX_VISUAL_SOURCES = 3;
-const MAX_VISUAL_CANDIDATES = 240;
+const MAX_VISUAL_CANDIDATES = 400;
 const SEARCH_STOP_WORDS = new Set([
   "about", "after", "again", "also", "been", "before", "could", "drawing", "drawings", "from", "have", "image", "into",
   "just", "make", "more", "need", "page", "picture", "plan", "plans", "please", "representation", "sheet", "show", "that", "their",
@@ -52,11 +52,11 @@ function cachedSheetNumber(value: string | null) {
 }
 
 /**
- * Finds already-prepared drawing images that best match a visual question.
+ * Suggests already-prepared drawing images that best match a visual question.
  * This is a local D1 lookup only: it does not make another OpenAI request and
- * it never labels a page as visually verified by the model.
+ * these heuristic matches must never be labeled as cited or model-verified.
  */
-export async function findPreparedVisualSources(input: {
+export async function findSuggestedPreparedVisuals(input: {
   ownerUserId: string;
   projectId: string;
   question: string;
@@ -66,9 +66,14 @@ export async function findPreparedVisualSources(input: {
   if (!tokens.length || !input.citations.length) return [];
 
   const openAIFileIds = input.citations
-    .map((citation) => citation.fileId)
-    .filter((value): value is string => Boolean(value));
-  const fileNames = input.citations.map((citation) => citation.filename).filter(Boolean);
+    .filter((citation) => Boolean(citation.fileId))
+    .map((citation) => citation.fileId as string);
+  // A filename is only a fallback when the response omitted a stable OpenAI
+  // file ID. This prevents a same-named revision from replacing an exact hit.
+  const fileNames = input.citations
+    .filter((citation) => !citation.fileId)
+    .map((citation) => citation.filename)
+    .filter(Boolean);
   const sourcePredicates = [];
   if (openAIFileIds.length) sourcePredicates.push(inArray(planFiles.openaiFileId, openAIFileIds));
   if (fileNames.length) sourcePredicates.push(inArray(planFiles.fileName, fileNames));
@@ -94,7 +99,7 @@ export async function findPreparedVisualSources(input: {
     isNotNull(planPages.storageKey),
     or(...sourcePredicates),
     contentMatch,
-  )).limit(MAX_VISUAL_CANDIDATES);
+  )).orderBy(asc(planFiles.fileName), asc(planPages.pageNumber)).limit(MAX_VISUAL_CANDIDATES);
 
   return rows
     .map((page) => ({ page, score: pageScore(page, tokens) }))

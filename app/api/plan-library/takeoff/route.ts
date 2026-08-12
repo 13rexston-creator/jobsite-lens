@@ -1,6 +1,7 @@
-import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, lt, lte, sql } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { planFiles, planPages } from "../../../../db/schema";
+import { fixturePagePrioritySql } from "../../../fixture-page-priority";
 import { MAX_PAGE_IMAGE_SIZE } from "../../../plan-pages";
 import {
   getAuthorizedPlanUser,
@@ -14,6 +15,7 @@ import {
 
 const STALE_PROCESSING_MS = 15 * 60 * 1000;
 const MAX_PROMPT_TEXT_LENGTH = 12_000;
+const PRIORITY_TEXT_HALF = 6_000;
 const MAX_ANALYSIS_COUNT = 100_000;
 const CONSTRUCTION_CAVEAT = "Automated drawing takeoff is an aid, not a sealed estimate. Verify quantities against the current issued drawings and with the design team before procurement, fabrication, or installation.";
 
@@ -78,6 +80,8 @@ type AnalyzedPage = {
 
 type StateRow = SourcePage & {
   storageKey: string | null;
+  imageSize: number | null;
+  takeoffPriority: number;
   isCandidate: boolean;
   analysisStatus: string;
   analysisJson: string | null;
@@ -367,6 +371,8 @@ export async function getFixtureTakeoffState(userId: string, project: { id: stri
     pageNumber: planPages.pageNumber,
     pageCount: planPages.pageCount,
     storageKey: planPages.storageKey,
+    imageSize: planPages.imageSize,
+    takeoffPriority: fixturePagePrioritySql,
     isCandidate: planPages.isCandidate,
     analysisStatus: planPages.analysisStatus,
     analysisJson: planPages.analysisJson,
@@ -391,13 +397,19 @@ export async function getFixtureTakeoffState(userId: string, project: { id: stri
   const processingPages = countStatus("processing");
   const failedPages = countStatus("failed");
   const candidatePages = candidates.length;
+  const priorityCandidates = candidates.filter((row) => row.takeoffPriority <= 1);
+  const isWaiting = (row: StateRow) => row.analysisStatus === "pending" || row.analysisStatus === "failed";
+  const hasAnalyzableImage = (row: StateRow) => Boolean(row.storageKey) && typeof row.imageSize === "number" && row.imageSize > 0 && row.imageSize <= MAX_PAGE_IMAGE_SIZE;
+  const analyzableRemainingPages = candidates.filter((row) => hasAnalyzableImage(row) && isWaiting(row)).length;
+  const priorityRemainingPages = priorityCandidates.filter((row) => hasAnalyzableImage(row) && isWaiting(row)).length;
+  const blockedCandidatePages = candidates.filter((row) => !hasAnalyzableImage(row) && row.analysisStatus !== "complete").length;
   const progressStatus = candidatePages === 0
     ? "not_ready"
     : processingPages > 0
       ? "processing"
-      : pendingPages > 0
-        ? "ready"
-        : failedPages > 0
+      : analyzableRemainingPages > 0
+        ? pendingPages > 0 ? "ready" : "needs_attention"
+        : blockedCandidatePages > 0 || failedPages > 0
           ? "needs_attention"
           : "complete";
 
@@ -407,7 +419,13 @@ export async function getFixtureTakeoffState(userId: string, project: { id: stri
       status: progressStatus,
       totalPages: stateRows.length,
       candidatePages,
-      preparedCandidatePages: candidates.filter((row) => Boolean(row.storageKey)).length,
+      preparedCandidatePages: candidates.filter(hasAnalyzableImage).length,
+      priorityCandidatePages: priorityCandidates.length,
+      priorityCompletePages: priorityCandidates.filter((row) => row.analysisStatus === "complete").length,
+      priorityRemainingPages,
+      analyzableRemainingPages,
+      blockedCandidatePages,
+      retryableFailedPages: candidates.filter((row) => hasAnalyzableImage(row) && row.analysisStatus === "failed").length,
       pendingPages,
       processingPages,
       completePages,
@@ -433,7 +451,7 @@ async function recoverStaleClaims(userId: string, projectId: string) {
   ));
 }
 
-async function claimNextPage(userId: string, projectId: string) {
+async function claimNextPage(userId: string, projectId: string, priorityOnly = false) {
   const db = getDb();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const [candidate] = await db.select({
@@ -446,16 +464,24 @@ async function claimNextPage(userId: string, projectId: string) {
       imageSize: planPages.imageSize,
       width: planPages.width,
       height: planPages.height,
-      extractedText: planPages.extractedText,
+      extractedText: sql<string>`case
+        when length(${planPages.extractedText}) <= ${MAX_PROMPT_TEXT_LENGTH} then ${planPages.extractedText}
+        else substr(${planPages.extractedText}, 1, ${PRIORITY_TEXT_HALF}) || ' ' || substr(${planPages.extractedText}, -${PRIORITY_TEXT_HALF})
+      end`,
     }).from(planPages).innerJoin(planFiles, eq(planFiles.id, planPages.fileId)).where(and(
       eq(planPages.projectId, projectId),
       eq(planPages.ownerUserId, userId),
       eq(planFiles.projectId, projectId),
       eq(planFiles.ownerUserId, userId),
       eq(planPages.isCandidate, true),
+      isNotNull(planPages.storageKey),
+      gt(planPages.imageSize, 0),
+      lte(planPages.imageSize, MAX_PAGE_IMAGE_SIZE),
       inArray(planPages.analysisStatus, ["pending", "failed"]),
+      priorityOnly ? sql`${fixturePagePrioritySql} <= 1` : undefined,
     )).orderBy(
       sql`CASE WHEN ${planPages.analysisStatus} = 'pending' THEN 0 ELSE 1 END`,
+      fixturePagePrioritySql,
       asc(planPages.createdAt),
       asc(planPages.fileId),
       asc(planPages.pageNumber),
@@ -473,6 +499,9 @@ async function claimNextPage(userId: string, projectId: string) {
       eq(planPages.projectId, projectId),
       eq(planPages.ownerUserId, userId),
       eq(planPages.isCandidate, true),
+      isNotNull(planPages.storageKey),
+      gt(planPages.imageSize, 0),
+      lte(planPages.imageSize, MAX_PAGE_IMAGE_SIZE),
       inArray(planPages.analysisStatus, ["pending", "failed"]),
     )).returning({ id: planPages.id });
     if (claimed) return candidate;
@@ -562,7 +591,15 @@ async function markPage(
   pageId: string,
   userId: string,
   projectId: string,
-  values: { analysisStatus: string; analysisJson?: string | null; analysisError?: string | null },
+  values: {
+    analysisStatus: string;
+    analysisJson?: string | null;
+    analysisError?: string | null;
+    storageKey?: string | null;
+    imageSize?: number | null;
+    width?: number | null;
+    height?: number | null;
+  },
 ) {
   return getDb().update(planPages).set({ ...values, updatedAt: Date.now() }).where(and(
     eq(planPages.id, pageId),
@@ -591,19 +628,24 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  let body: { projectId?: unknown };
+  let parsedBody: unknown;
   try {
-    body = await request.json() as { projectId?: unknown };
+    parsedBody = await request.json();
   } catch {
     return Response.json({ error: "Send a valid projectId as JSON." }, { status: 400 });
   }
+  if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+    return Response.json({ error: "Send a valid projectId as JSON." }, { status: 400 });
+  }
+  const body = parsedBody as { projectId?: unknown; priorityOnly?: unknown };
   const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "";
+  const priorityOnly = body.priorityOnly === true;
   const authorized = await authorizedProject(projectId);
   if ("response" in authorized) return authorized.response;
   const { user, project } = authorized;
 
   await recoverStaleClaims(user.userId, project.id);
-  const page = await claimNextPage(user.userId, project.id);
+  const page = await claimNextPage(user.userId, project.id, priorityOnly);
   if (!page) {
     return Response.json({ processed: false, page: null, ...await getFixtureTakeoffState(user.userId, project) });
   }
@@ -671,6 +713,31 @@ export async function POST(request: Request) {
         ...await getFixtureTakeoffState(user.userId, project),
       }, { status: 402 });
     }
+    if (error instanceof PageImageError) {
+      try {
+        if (page.storageKey) await requirePlanStorage().delete(page.storageKey);
+      } catch {
+        // Clearing the database reference below prevents a corrupt/missing
+        // derivative from starving later prepared sheets even if R2 is down.
+      }
+      const blockedMessage = `${message} Prepare this page image again before retrying it.`;
+      await markPage(page.pageId, user.userId, project.id, {
+        analysisStatus: "pending",
+        analysisJson: null,
+        analysisError: blockedMessage,
+        storageKey: null,
+        imageSize: null,
+        width: null,
+        height: null,
+      });
+      return Response.json({
+        error: blockedMessage,
+        processed: false,
+        blocked: true,
+        page: publicPage,
+        ...await getFixtureTakeoffState(user.userId, project),
+      }, { status: 422 });
+    }
     await markPage(page.pageId, user.userId, project.id, {
       analysisStatus: "failed",
       analysisError: message,
@@ -680,6 +747,6 @@ export async function POST(request: Request) {
       processed: false,
       page: publicPage,
       ...await getFixtureTakeoffState(user.userId, project),
-    }, { status: error instanceof PageImageError ? 422 : 502 });
+    }, { status: 502 });
   }
 }

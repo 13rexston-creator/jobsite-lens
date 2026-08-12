@@ -4,7 +4,9 @@ import { z } from "zod";
 import { getDb } from "../../../db";
 import { planFiles, planPages, planProjects } from "../../../db/schema";
 import { resolveChatGPTConnection, type ChatGPTConnectionOwner } from "../../chatgpt-connection";
+import { fixturePagePrioritySql } from "../../fixture-page-priority";
 import { requirePlanStorage } from "../../plan-library";
+import { MAX_PAGE_IMAGE_SIZE } from "../../plan-pages";
 
 const MAX_QUERY_LENGTH = 256;
 const MAX_SEARCH_RESULTS = 20;
@@ -543,6 +545,10 @@ async function fixtureTakeoff(ownerUserId: string, origin: string, projectId: st
     completePages: sql<number>`sum(case when ${planPages.isCandidate} = 1 and ${planPages.analysisStatus} = 'complete' then 1 else 0 end)`,
     pendingPages: sql<number>`sum(case when ${planPages.isCandidate} = 1 and ${planPages.analysisStatus} in ('pending', 'processing') then 1 else 0 end)`,
     failedPages: sql<number>`sum(case when ${planPages.isCandidate} = 1 and ${planPages.analysisStatus} = 'failed' then 1 else 0 end)`,
+    priorityCandidatePages: sql<number>`sum(case when ${planPages.isCandidate} = 1 and ${fixturePagePrioritySql} <= 1 then 1 else 0 end)`,
+    priorityCompletePages: sql<number>`sum(case when ${planPages.isCandidate} = 1 and ${fixturePagePrioritySql} <= 1 and ${planPages.analysisStatus} = 'complete' then 1 else 0 end)`,
+    priorityRemainingPages: sql<number>`sum(case when ${planPages.isCandidate} = 1 and ${fixturePagePrioritySql} <= 1 and ${planPages.storageKey} is not null and ${planPages.imageSize} > 0 and ${planPages.imageSize} <= ${MAX_PAGE_IMAGE_SIZE} and ${planPages.analysisStatus} in ('pending', 'failed') then 1 else 0 end)`,
+    blockedCandidatePages: sql<number>`sum(case when ${planPages.isCandidate} = 1 and ${planPages.analysisStatus} != 'complete' and (${planPages.storageKey} is null or ${planPages.imageSize} is null or ${planPages.imageSize} <= 0 or ${planPages.imageSize} > ${MAX_PAGE_IMAGE_SIZE}) then 1 else 0 end)`,
   }).from(planPages).where(and(eq(planPages.projectId, project.id), eq(planPages.ownerUserId, ownerUserId)));
   const rows = await db.select({
     pageId: planPages.id,
@@ -597,6 +603,10 @@ async function fixtureTakeoff(ownerUserId: string, origin: string, projectId: st
   const fixtures = aggregate("fixtures").map((item) => ({ ...item, installedCount: null }));
   const candidatePages = Number(counts?.candidatePages ?? 0);
   const completePages = Number(counts?.completePages ?? 0);
+  const priorityCandidatePages = Number(counts?.priorityCandidatePages ?? 0);
+  const priorityCompletePages = Number(counts?.priorityCompletePages ?? 0);
+  const priorityRemainingPages = Number(counts?.priorityRemainingPages ?? 0);
+  const blockedCandidatePages = Number(counts?.blockedCandidatePages ?? 0);
   const truncated = completePages > rows.length;
   const invalidCachedAnalyses = Math.max(0, Math.min(completePages, rows.length) - parsedRows.length);
   const partial = candidatePages === 0 || completePages < candidatePages || truncated || invalidCachedAnalyses > 0;
@@ -604,6 +614,8 @@ async function fixtureTakeoff(ownerUserId: string, origin: string, projectId: st
   if (candidatePages === 0) warnings.push("No candidate drawing pages have been prepared for fixture takeoff.");
   if (invalidCachedAnalyses) warnings.push(`${invalidCachedAnalyses} cached page analyses were invalid and excluded from totals.`);
   if (truncated) warnings.push(`The private preview aggregates at most ${MAX_TAKEOFF_ANALYSES} cached page analyses per request.`);
+  if (priorityRemainingPages) warnings.push(`${priorityRemainingPages} prepared priority candidate sheet(s) still need visual analysis in Jobsite Lens; there is no background analysis job.`);
+  if (blockedCandidatePages) warnings.push(`${blockedCandidatePages} candidate sheet(s) need a prepared image before visual analysis.`);
   if (parsedRows.length > 100) warnings.push("The source list is capped at 100 pages; cached totals still use every analysis within the request limit.");
   const primaryScopes = [...primaryByScope.entries()].map(([scopeKey, row]) => ({
     scopeKey,
@@ -623,6 +635,10 @@ async function fixtureTakeoff(ownerUserId: string, origin: string, projectId: st
       completePages,
       pendingPages: Number(counts?.pendingPages ?? 0),
       failedPages: Number(counts?.failedPages ?? 0),
+      priorityCandidatePages,
+      priorityCompletePages,
+      priorityRemainingPages,
+      blockedCandidatePages,
       cachedAnalysesUsed: parsedRows.length,
       partial,
     },

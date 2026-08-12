@@ -6,6 +6,12 @@ const askRoutePath = new URL("../app/api/plan-library/ask/route.ts", import.meta
 const planLibraryPath = new URL("../app/dashboard/PlanLibrary.tsx", import.meta.url);
 const visualSourcesPath = new URL("../app/plan-visual-sources.ts", import.meta.url);
 
+function regexConstant(source, name) {
+  const match = source.match(new RegExp(`const ${name} = (\\/.+\\/[a-z]*);`));
+  assert.ok(match, `missing ${name}`);
+  return Function(`return ${match[1]}`)();
+}
+
 test("plan-library chat keeps bounded, stateless history and the cached takeoff fast path", async () => {
   const source = await readFile(askRoutePath, "utf8");
 
@@ -51,8 +57,18 @@ test("plan-library ask rejects non-object JSON and keeps fixture follow-ups on t
   assert.match("break those down by floor", new RegExp(detailFollowUp[1], "i"));
   assert.match("show them by level", new RegExp(detailFollowUp[1], "i"));
   assert.doesNotMatch("break doors down by floor", new RegExp(detailFollowUp[1], "i"));
+  assert.match(source, /if \(UNSUPPORTED_FIXTURE_TARGET\.test\(question\)\) return false/);
+  assert.match(source, /partitions\?\|mirrors\?\|grab\\s\*bars/);
+  assert.match(source, /floors\?\|levels\?\|buildings\?/);
+  assert.match(source, /isSupportedDirectFixtureCountQuestion\(question\)/);
+  assert.match(source, /SUPPORTED_NAMED_FIXTURE_FOLLOW_UP\.test\(question\)/);
+  assert.match(source, /men\(\?:'s\)\?\|women\(\?:'s\)\?/);
+  assert.match(source, /stalls\?\|partitions\?/);
+  assert.match(source, /units\?\|apartments\?/);
+  assert.match(source, /saved visual takeoff does not contain a reliable floor, level, building, area, or sheet breakdown/);
+  assert.match(source, /This follow-up does not identify one fixture type/);
   assert.match(source, /history\.slice\(-4\)\.some/);
-  assert.match(source, /QUANTITY_QUESTION\.test\(message\.content\) && FIXTURE_TERM\.test\(message\.content\)/);
+  assert.match(source, /isSupportedDirectFixtureCountQuestion\(message\.content\) && !UNSUPPORTED_FIXTURE_TARGET\.test\(message\.content\)/);
   assert.match(source, /message\.role === "assistant" && CACHED_FIXTURE_ANSWER\.test\(message\.content\)/);
   assert.match(source, /if \(!historyHasFixtureTakeoffContext\(history\)\) return false/);
   assert.match(source, /hasFixture && FIXTURE_NAMED_FOLLOW_UP\.test\(question\)/);
@@ -64,6 +80,43 @@ test("plan-library ask rejects non-object JSON and keeps fixture follow-ups on t
   assert.ok(cachedStart >= 0 && indexedSearchStart > cachedStart);
   assert.doesNotMatch(source.slice(cachedStart, indexedSearchStart), /openAIRequest|file_search/);
   assert.match(source.slice(cachedStart, indexedSearchStart), /costProfile: "(?:cached_)?no_api"/);
+  assert.match(source.slice(cachedStart, indexedSearchStart), /cachedTakeoffAnswer\(takeoff, question\)/);
+});
+
+test("cached fixture routing accepts supported counts and rejects scoped or accessory counts", async () => {
+  const source = await readFile(askRoutePath, "utf8");
+  const quantity = regexConstant(source, "QUANTITY_QUESTION");
+  const fixture = regexConstant(source, "FIXTURE_TERM");
+  const unsupported = regexConstant(source, "UNSUPPORTED_FIXTURE_TARGET");
+  const supportedDirect = regexConstant(source, "SUPPORTED_DIRECT_FIXTURE_COUNT");
+  const supportedPrefix = regexConstant(source, "SUPPORTED_DIRECT_COUNT_PREFIX");
+  const supportedSuffix = regexConstant(source, "SUPPORTED_DIRECT_COUNT_SUFFIX");
+  const supportedNamedFollowUp = regexConstant(source, "SUPPORTED_NAMED_FIXTURE_FOLLOW_UP");
+  const directUsesCache = (question) => {
+    const match = supportedDirect.exec(question);
+    if (!match || match.index === undefined) return false;
+    return quantity.test(question) && fixture.test(question) && !unsupported.test(question)
+      && supportedPrefix.test(question.slice(0, match.index))
+      && supportedSuffix.test(question.slice(match.index + match[0].length));
+  };
+
+  assert.equal(directUsesCache("How many bathrooms are in the project?"), true);
+  assert.equal(directUsesCache("Count all sinks"), true);
+  assert.equal(directUsesCache("Give me the plumbing fixture takeoff"), true);
+  assert.equal(directUsesCache("How many bathroom stalls are there?"), false);
+  assert.equal(directUsesCache("How many accessible bathrooms are there?"), false);
+  assert.equal(directUsesCache("How many bathrooms are in Building A Level 1?"), false);
+  assert.equal(directUsesCache("How many bathrooms per apartment?"), false);
+  assert.equal(directUsesCache("How many toilet partitions?"), false);
+  assert.equal(directUsesCache("How many bathrooms and bedrooms?"), false);
+  assert.equal(directUsesCache("Count sinks and kitchens"), false);
+  assert.equal(directUsesCache("How many toilets per bathroom?"), false);
+  assert.equal(directUsesCache("How many bathroom vanities are shown?"), false);
+  assert.equal(directUsesCache("How many toilet seats are specified?"), false);
+  assert.equal(directUsesCache("How many shower heads are required?"), false);
+  assert.equal(directUsesCache("How many sink faucets are shown?"), false);
+  assert.equal(supportedNamedFollowUp.test("What about toilets?"), true);
+  assert.equal(supportedNamedFollowUp.test("What about toilet partitions?"), false);
 });
 
 test("plan-library UI sends bounded history and keeps the in-app thread primary", async () => {
@@ -92,8 +145,9 @@ test("visual questions attach owner-scoped prepared sheet previews without anoth
   ]);
 
   assert.match(askRoute, /if \(visualRequested && sources\.length\)/);
-  assert.match(askRoute, /visualSources = await findPreparedVisualSources/);
-  assert.match(askRoute, /sources: answerSources/);
+  assert.match(askRoute, /suggestedVisuals = await findSuggestedPreparedVisuals/);
+  assert.match(askRoute, /sources,\s*\n\s*suggestedVisuals,/);
+  assert.doesNotMatch(askRoute, /sources:\s*\[\.\.\.suggestedVisuals/);
   assert.match(askRoute, /Never spend another API call for previews/);
   assert.equal((askRoute.match(/openAIRequest\("\/responses"/g) ?? []).length, 1);
 
@@ -102,5 +156,12 @@ test("visual questions attach owner-scoped prepared sheet previews without anoth
   assert.match(visualSources, /eq\(planFiles\.ownerUserId, input\.ownerUserId\)/);
   assert.match(visualSources, /isNotNull\(planPages\.storageKey\)/);
   assert.match(visualSources, /MAX_VISUAL_SOURCES = 3/);
+  assert.match(visualSources, /filter\(\(citation\) => !citation\.fileId\)/);
+  assert.match(visualSources, /heuristic matches must never be labeled as cited or model-verified/);
   assert.match(visualSources, /imageUrl: `\/api\/plan-library\/files\/\$\{encodeURIComponent\(page\.fileId\)\}\/pages\/\$\{encodeURIComponent\(page\.pageId\)\}`/);
+
+  const ui = await readFile(planLibraryPath, "utf8");
+  assert.match(ui, /message\.suggestedVisuals\.length > 0/);
+  assert.match(ui, /Suggested prepared sheets · open and verify/);
+  assert.match(ui, /Suggested text match · verify sheet/);
 });

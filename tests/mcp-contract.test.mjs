@@ -22,5 +22,9 @@ test("private ChatGPT MCP route preserves the read-only knowledge-source contrac
   assert.match(source, /const fetchOutputSchema = z\.object\(\{[\s\S]*?id:[\s\S]*?title:[\s\S]*?text:[\s\S]*?url:[\s\S]*?metadata:/);
   assert.match(source, /content:\s*\[\{ type: "text" as const, text: JSON\.stringify\(value\) \}\]/);
   assert.match(source, /type:\s*"image" as const, data: base64Jpeg\(bytes\), mimeType:\s*"image\/jpeg"/);
+  assert.match(source, /priorityCandidatePages/);
+  assert.match(source, /priorityCompletePages/);
+  assert.match(source, /priorityRemainingPages/);
+  assert.match(source, /there is no background analysis job/);
   assert.doesNotMatch(source, /openAIRequest|OPENAI_API_KEY|console\.(?:log|error|warn)/);
 });

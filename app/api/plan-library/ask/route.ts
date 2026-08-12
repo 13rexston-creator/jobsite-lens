@@ -2,7 +2,7 @@ import { and, count, eq } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { planFiles } from "../../../../db/schema";
 import { getAuthorizedPlanUser, getOwnedPlanProject, openAIRequest, outputText, planRuntime, planSafetyIdentifier } from "../../../plan-library";
-import { findPreparedVisualSources } from "../../../plan-visual-sources";
+import { findSuggestedPreparedVisuals } from "../../../plan-visual-sources";
 import { getFixtureTakeoffState } from "../takeoff/route";
 
 type Annotation = { type?: string; filename?: string; file_id?: string };
@@ -21,6 +21,11 @@ const FIXTURE_TERM = /\b(bath(?:room)?s?|restrooms?|toilets?|water\s*closets?|la
 const FIXTURE_NAMED_FOLLOW_UP = /^\s*(?:what\s+about|and)\b/i;
 const FIXTURE_PRONOUN_FOLLOW_UP = /\b(?:those|them|these|that)\b/i;
 const FIXTURE_DETAIL_FOLLOW_UP = /\b(?:break\s+(?:those|them|these|that)\s+down|(?:show|group|split|list)\s+(?:those|them|these|that)\s+by|(?:those|them|these|that)\s+by\s+(?:floor|level|building|area|type|sheet))\b/i;
+const UNSUPPORTED_FIXTURE_TARGET = /\b(?:accessib(?:le|ility)|ada|ambulatory|mobility|type\s+[ab]|men(?:'s)?|women(?:'s)?|accessor(?:y|ies)|stalls?|partitions?|mirrors?|grab\s*bars?|dispensers?|cabinets?|counters?|doors?|ducts?|exhaust|fans?|finishes?|hvac|lighting|power|ventilation|walls?|floors?|levels?|buildings?|areas?|sheets?|units?|apartments?)\b/i;
+const SUPPORTED_DIRECT_FIXTURE_COUNT = /\b(?:(?:how\s+many|number\s+of|quantit(?:y|ies)\s+of|total(?:\s+number\s+of)?|count(?:\s+all|\s+the)?|take-?off(?:\s+of)?)\s+(?:all\s+|the\s+|total\s+|visible\s+|project\s+)*(?:bath(?:room)?s?|restrooms?|toilets?|water\s*closets?|lavator(?:y|ies)|sinks?|urinals?|showers?|tubs?|plumbing\s+fixtures?|fixtures?)|(?:bath(?:room)?s?|restrooms?|toilets?|water\s*closets?|lavator(?:y|ies)|sinks?|urinals?|showers?|tubs?|plumbing\s+fixtures?|fixtures?)\s+(?:count|counts|quantit(?:y|ies)|take-?off|total))\b/i;
+const SUPPORTED_DIRECT_COUNT_PREFIX = /^\s*(?:(?:please|can\s+you|could\s+you|would\s+you|tell\s+me|i\s+need)\s+|(?:give|show)\s+me\s+(?:the\s+)?|what(?:'s|\s+is)\s+(?:the\s+)?)?$/i;
+const SUPPORTED_DIRECT_COUNT_SUFFIX = /^\s*(?:(?:are|is)\s+(?:there|shown|visible)|(?:are|is)\s+(?:in|on)\s+(?:the\s+)?(?:project|plans?|drawings?|plan\s+set)|(?:in|on|for)\s+(?:the\s+)?(?:project|plans?|drawings?|plan\s+set)|do\s+(?:we|the\s+plans?)\s+(?:have|show))?\s*[?.!]*\s*$/i;
+const SUPPORTED_NAMED_FIXTURE_FOLLOW_UP = /^\s*(?:what\s+about|and)\s+(?:the\s+)?(?:bath(?:room)?s?|restrooms?|toilets?|water\s*closets?|lavator(?:y|ies)|sinks?|urinals?|showers?|tubs?|plumbing\s+fixtures?|fixtures?)\s*[?.!]*\s*$/i;
 const CACHED_FIXTURE_ANSWER = /(?:\bvisible\s+bathroom\/restroom\s+rooms\b|\bmatrix-derived\s+rooms\b|\bcached\s+(?:fixture|visual)\s+takeoff\b|\bfixtures:)/i;
 const VISUAL_QUESTION = /\b(visual(?:ly|ization|ise|ize)?|show\s+me|image|picture|diagram|chart|graph|sketch|markup|highlight|symbols?|geometry|dimensions?|where\s+(?:is|are|on))\b/i;
 
@@ -50,9 +55,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isSupportedDirectFixtureCountQuestion(question: string) {
+  const match = SUPPORTED_DIRECT_FIXTURE_COUNT.exec(question);
+  if (!match || match.index === undefined) return false;
+  const prefix = question.slice(0, match.index);
+  const suffix = question.slice(match.index + match[0].length);
+  return SUPPORTED_DIRECT_COUNT_PREFIX.test(prefix) && SUPPORTED_DIRECT_COUNT_SUFFIX.test(suffix);
+}
+
 function historyHasFixtureTakeoffContext(history: HistoryMessage[]) {
   return history.slice(-4).some((message) => (
-    (QUANTITY_QUESTION.test(message.content) && FIXTURE_TERM.test(message.content))
+    (isSupportedDirectFixtureCountQuestion(message.content) && !UNSUPPORTED_FIXTURE_TARGET.test(message.content))
     || (message.role === "assistant" && CACHED_FIXTURE_ANSWER.test(message.content))
   ));
 }
@@ -60,9 +73,10 @@ function historyHasFixtureTakeoffContext(history: HistoryMessage[]) {
 function isFixtureTakeoffIntent(question: string, history: HistoryMessage[]) {
   const hasQuantity = QUANTITY_QUESTION.test(question);
   const hasFixture = FIXTURE_TERM.test(question);
-  if (hasQuantity && hasFixture) return true;
+  if (UNSUPPORTED_FIXTURE_TARGET.test(question)) return false;
+  if (hasQuantity && hasFixture && isSupportedDirectFixtureCountQuestion(question)) return true;
   if (!historyHasFixtureTakeoffContext(history)) return false;
-  return (hasFixture && FIXTURE_NAMED_FOLLOW_UP.test(question))
+  return (hasFixture && FIXTURE_NAMED_FOLLOW_UP.test(question) && SUPPORTED_NAMED_FIXTURE_FOLLOW_UP.test(question))
     || (hasQuantity && FIXTURE_PRONOUN_FOLLOW_UP.test(question))
     || FIXTURE_DETAIL_FOLLOW_UP.test(question);
 }
@@ -91,11 +105,23 @@ function countLabel(value: string) {
   return value.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 
-function cachedTakeoffAnswer(state: Awaited<ReturnType<typeof getFixtureTakeoffState>>) {
+function cachedTakeoffAnswer(state: Awaited<ReturnType<typeof getFixtureTakeoffState>>, question: string) {
   const { progress, result } = state;
-  const coverage = progress.status === "complete"
-    ? "The prepared candidate sheets are fully analyzed."
-    : `The cached takeoff is ${progress.percentComplete}% complete (${progress.completePages} of ${progress.candidatePages} candidate sheets), so these are not final project totals.`;
+  const priorityCandidatePages = progress.priorityCandidatePages ?? 0;
+  const priorityCompletePages = progress.priorityCompletePages ?? 0;
+  const priorityRemainingPages = progress.priorityRemainingPages ?? 0;
+  const followUpLimitation = FIXTURE_DETAIL_FOLLOW_UP.test(question)
+    ? "The saved visual takeoff does not contain a reliable floor, level, building, area, or sheet breakdown. I can only return the aggregate cached counts below without running a new targeted review."
+    : !FIXTURE_TERM.test(question) && FIXTURE_PRONOUN_FOLLOW_UP.test(question)
+      ? "This follow-up does not identify one fixture type, so I am returning the saved aggregate takeoff below. Name the fixture type for a narrower cached answer."
+      : "";
+  const coverage = priorityCandidatePages
+    ? priorityCompletePages === priorityCandidatePages
+      ? `The ${priorityCandidatePages} priority candidate sheets are analyzed. ${Math.max(0, progress.remainingPages - priorityRemainingPages)} lower-priority or blocked candidate sheets remain, so verify the aggregate against the current drawings.`
+      : `The priority visual takeoff is incomplete (${priorityCompletePages} of ${priorityCandidatePages} priority candidate sheets complete; ${priorityRemainingPages} prepared priority sheets waiting; ${Math.max(0, priorityCandidatePages - priorityCompletePages - priorityRemainingPages)} blocked or currently processing), so these are not final project totals.`
+    : progress.status === "complete"
+      ? "The prepared candidate sheets are fully analyzed."
+      : `The cached takeoff is ${progress.percentComplete}% complete (${progress.completePages} of ${progress.candidatePages} candidate sheets), so these are not final project totals.`;
   const bathroomParts = [
     `Visible bathroom/restroom rooms: ${result.bathroomRooms.visibleCount}`,
     result.bathroomRooms.estimatedCount ? `matrix-derived rooms: ${result.bathroomRooms.estimatedCount}` : "",
@@ -106,6 +132,7 @@ function cachedTakeoffAnswer(state: Awaited<ReturnType<typeof getFixtureTakeoffS
   });
   const warnings = result.warnings.slice(0, 4).map((warning) => `- ${warning}`).join("\n");
   return [
+    followUpLimitation,
     coverage,
     bathroomParts,
     fixtureParts.length ? `Fixtures:\n${fixtureParts.map((item) => `- ${item}`).join("\n")}` : "No supported fixture symbols have been counted yet.",
@@ -156,7 +183,7 @@ export async function POST(request: Request) {
       return Response.json({
         kind: "fixture_takeoff_cached",
         status: takeoff.progress.status,
-        answer: cachedTakeoffAnswer(takeoff),
+        answer: cachedTakeoffAnswer(takeoff, question),
         sources,
         takeoff,
         visualVerification: {
@@ -210,10 +237,10 @@ export async function POST(request: Request) {
         fileId: annotation.file_id ?? null,
         filename: annotation.filename!,
       }])).values()];
-    let visualSources: Awaited<ReturnType<typeof findPreparedVisualSources>> = [];
+    let suggestedVisuals: Awaited<ReturnType<typeof findSuggestedPreparedVisuals>> = [];
     if (visualRequested && sources.length) {
       try {
-        visualSources = await findPreparedVisualSources({
+        suggestedVisuals = await findSuggestedPreparedVisuals({
           ownerUserId: user.userId,
           projectId: project.id,
           question,
@@ -224,15 +251,12 @@ export async function POST(request: Request) {
         // page lookup is unavailable. Never spend another API call for previews.
       }
     }
-    const visualFileNames = new Set(visualSources.map((source) => source.filename));
-    const answerSources = visualSources.length
-      ? [...visualSources, ...sources.filter((source) => !visualFileNames.has(source.filename))]
-      : sources;
 
     return Response.json({
       kind: visualRequested ? "plan_answer_with_visual_request" : "plan_answer",
       answer,
-      sources: answerSources,
+      sources,
+      suggestedVisuals,
       visualVerification: { status: "not_run", checkedFiles: [], skippedFiles: [] },
       costProfile: "single_search",
     });

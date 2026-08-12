@@ -16,6 +16,7 @@ test("fixture analysis persists reusable location and tub orientation evidence",
   assert.match(intelligence, /LEFT_HAND/);
   assert.match(intelligence, /RIGHT_HAND/);
   assert.match(intelligence, /UNKNOWN/);
+  assert.match(intelligence, /offset \+= 4/);
 });
 
 test("simple fixture questions bypass giant model context and MCP fallbacks are bounded", async () => {

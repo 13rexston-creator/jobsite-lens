@@ -76,7 +76,7 @@ export async function replacePageFixtureIntelligence(args: {
   ));
   if (!args.records.length) return;
   const now = Date.now();
-  await db.insert(planFixtureIntelligence).values(args.records.map((record) => ({
+  const values = args.records.map((record) => ({
     id: crypto.randomUUID(),
     projectId: args.projectId,
     fileId: args.fileId,
@@ -88,7 +88,12 @@ export async function replacePageFixtureIntelligence(args: {
     sheetTitle: args.sheetTitle,
     createdAt: now,
     updatedAt: now,
-  })));
+  }));
+  // D1 caps bound parameters per statement. This table has 20 columns, so
+  // four records per insert stays safely below the platform limit.
+  for (let offset = 0; offset < values.length; offset += 4) {
+    await db.insert(planFixtureIntelligence).values(values.slice(offset, offset + 4));
+  }
 }
 
 export async function queryFixtureIntelligence(ownerUserId: string, projectId: string, filters: IntelligenceFilters) {

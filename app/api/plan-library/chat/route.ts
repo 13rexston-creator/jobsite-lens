@@ -75,6 +75,8 @@ export async function POST(request: Request) {
         tubIntent ? sql`(
           instr(lower(${planPages.extractedText}), 'tub') > 0 or instr(lower(${planPages.extractedText}), 'unit plan') > 0 or
           instr(lower(${planPages.extractedText}), 'unit matrix') > 0 or instr(lower(${planPages.extractedText}), 'floor plan') > 0 or
+          instr(lower(${planPages.extractedText}), 'one bedroom') > 0 or instr(lower(${planPages.extractedText}), 'two bedroom') > 0 or
+          instr(lower(${planPages.extractedText}), 'three bedroom') > 0 or instr(lower(${planPages.extractedText}), 'studio') > 0 or
           instr(lower(${planPages.extractedText}), 'pl401') > 0 or instr(lower(${planPages.extractedText}), 'pl402') > 0
         )` : undefined,
       ));

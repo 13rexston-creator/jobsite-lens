@@ -42,7 +42,8 @@ test("an incomplete fixture cache automatically runs bounded visual analysis and
   assert.match(chat, /analysisRequired/);
   assert.match(chat, /I'm analyzing the relevant drawing layouts now/);
   assert.doesNotMatch(chat, /No completed structured fixture records match/);
-  assert.match(ui, /maximumAutomaticPages = completion\.analysisIntent === "tub_handedness" \? 30 : 15/);
+  assert.match(ui, /maximumAutomaticPages = completion\.analysisIntent === "tub_handedness" \? 60 : 25/);
+  assert.match(takeoff, /one bedroom/);
   assert.match(ui, /const finalCompletion = await sendQuestion\(finalAssistantId\)/);
   assert.match(takeoff, /analysisIntent === "tub_handedness"/);
   assert.match(takeoff, /requiredVersion/);

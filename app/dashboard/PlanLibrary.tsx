@@ -364,7 +364,7 @@ export default function PlanLibrary() {
       const completion = await sendQuestion(assistantId);
       if (completion.analysisRequired && selectedProjectIdRef.current === projectId) {
         let processed = 0;
-        const maximumAutomaticPages = completion.analysisIntent === "tub_handedness" ? 30 : 15;
+        const maximumAutomaticPages = completion.analysisIntent === "tub_handedness" ? 60 : 25;
         while (processed < maximumAutomaticPages && selectedProjectIdRef.current === projectId) {
           setPlanChat((current) => current.map((entry) => entry.id === assistantId ? {
             ...entry, content: `I'm analyzing the relevant drawing layouts now. ${processed ? `${processed} sheets completed so far.` : "This first takeoff may take a little longer."}`,

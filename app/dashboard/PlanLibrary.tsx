@@ -130,6 +130,7 @@ type ChatGPTConnection = {
   createdAt?: number | null;
   lastUsedAt?: number | null;
 };
+type PlanChatMessage = { id: string; role: "user" | "assistant"; content: string };
 
 const MAX_RENDER_DIMENSION = 2400;
 const PAGE_JPEG_QUALITY = 0.8;
@@ -262,6 +263,10 @@ export default function PlanLibrary() {
   const [chatGPTSetupUrl, setChatGPTSetupUrl] = useState("");
   const [chatGPTBusy, setChatGPTBusy] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState("");
+  const [chatInput, setChatInput] = useState("");
+  const [planChat, setPlanChat] = useState<PlanChatMessage[]>([]);
+  const [planChatBusy, setPlanChatBusy] = useState(false);
+  const [planChatError, setPlanChatError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -274,7 +279,7 @@ export default function PlanLibrary() {
   const processingCount = files.filter((file) => file.status === "processing" || file.status === "uploading").length;
   const hasActiveUploads = uploads.some((upload) => upload.state === "waiting" || upload.state === "uploading");
   const hasActivePreparation = Object.values(pagePreparation).some((progress) => ["checking", "loading", "processing"].includes(progress.state));
-  const projectSelectionLocked = hasActiveUploads || hasActivePreparation || takeoffBusy || largeLocalBusy || prepareAllBusy || creatingProject || Boolean(retryingFileId);
+  const projectSelectionLocked = hasActiveUploads || hasActivePreparation || takeoffBusy || planChatBusy || largeLocalBusy || prepareAllBusy || creatingProject || Boolean(retryingFileId);
   const preparableStoredFiles = files.filter((file) =>
     file.originalStored !== false && file.status !== "stored_pages" &&
     (file.status === "stored" || file.status === "ready" || file.status === "failed") &&
@@ -312,6 +317,52 @@ export default function PlanLibrary() {
     loadFiles(selectedProjectId);
     loadTakeoff(selectedProjectId, true);
   }, [selectedProjectId]);
+
+  async function askPlanChat(event: React.FormEvent) {
+    event.preventDefault();
+    const message = chatInput.trim();
+    if (!selectedProjectId || !message || planChatBusy) return;
+    const projectId = selectedProjectId;
+    const history = planChat.slice(-10).map(({ role, content }) => ({ role, content }));
+    setPlanChat((current) => [...current, { id: crypto.randomUUID(), role: "user", content: message }]);
+    setChatInput("");
+    setPlanChatBusy(true);
+    setPlanChatError("");
+    const assistantId = crypto.randomUUID();
+    try {
+      const response = await fetch("/api/plan-library/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, message, history }),
+      });
+      if (!response.ok || !response.body) {
+        const data = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error || "The plan assistant could not answer this question.");
+      }
+      setPlanChat((current) => [...current, { id: assistantId, role: "assistant", content: "" }]);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const item = JSON.parse(line) as { type?: string; text?: string };
+          if (item.type === "delta" && item.text) setPlanChat((current) => current.map((entry) => entry.id === assistantId ? { ...entry, content: entry.content + item.text } : entry));
+        }
+        if (done) break;
+      }
+    } catch (cause) {
+      setPlanChat((current) => current.filter((entry) => entry.id !== assistantId));
+      setChatInput(message);
+      setPlanChatError(cause instanceof Error ? cause.message : "The plan assistant could not answer this question.");
+    } finally {
+      setPlanChatBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!selectedProjectId || !processingCount) return;
@@ -386,8 +437,9 @@ export default function PlanLibrary() {
     setTakeoff(null);
     setTakeoffBatchProcessed(0);
     setPagePreparation({});
-    setQuestion("");
-    setChatMessages([]);
+    setChatInput("");
+    setPlanChat([]);
+    setPlanChatError("");
     setError("");
   }
 
@@ -916,8 +968,22 @@ export default function PlanLibrary() {
 
         <div className="chatgpt-integration">
           {error && <div className="plan-error" role="alert">{error}</div>}
+          <section className="plan-ai-chat" aria-labelledby="plan-ai-title">
+            <div className="library-chat-head"><span className="lens-avatar">AI</span><div><strong id="plan-ai-title">Ask about {selectedProject?.name ?? "this job"}</strong><small>Stays inside Jobsite Lens · uses the same construction tools as the ChatGPT connection</small></div>{planChat.length > 0 && <button className="clear-plan-chat" type="button" disabled={planChatBusy} onClick={() => setPlanChat([])}>Clear</button>}</div>
+            <div className="library-thread" aria-live="polite">
+              {planChat.length === 0 && <div className="plan-chat-welcome"><strong>Ask a grounded plan question.</strong><span>The assistant searches this job, fetches relevant drawing records, opens prepared visual pages when needed, and cites its evidence.</span></div>}
+              {planChat.map((message) => <article className={`library-message ${message.role}`} key={message.id}><div><strong>{message.role === "user" ? "You" : "Jobsite Lens AI"}</strong></div><p>{message.content || "Reviewing the job’s plans…"}</p></article>)}
+            </div>
+            <form onSubmit={askPlanChat}>
+              <label htmlFor="plan-ai-question">Question about this job</label>
+              <textarea id="plan-ai-question" rows={4} value={chatInput} onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Example: How many bathrooms are in Building A?" />
+              <div><small>Enter to send · Shift+Enter for a new line</small><button type="submit" disabled={!selectedProjectId || !chatInput.trim() || planChatBusy}>{planChatBusy ? "Using plan tools…" : "Send"}<span>→</span></button></div>
+            </form>
+            {planChatError && <div className="plan-error" role="alert">{planChatError}</div>}
+          </section>
+
           <section className={`chatgpt-primary ${chatGPTEndpointReached ? "connected" : ""}`}>
-            <div className="chatgpt-primary-head"><span className="chatgpt-mark">✦</span><div><small>MAIN AI EXPERIENCE · CHATGPT</small><h3>Use this job in ChatGPT</h3></div><em>{chatGPTEndpointReached ? "Endpoint reached" : chatGPTConfigured ? "Setup required" : "Connect"}</em></div>
+            <div className="chatgpt-primary-head"><span className="chatgpt-mark">✦</span><div><small>OPTIONAL EXTERNAL CONNECTION</small><h3>Also use Jobsite Lens in ChatGPT</h3></div><em>{chatGPTEndpointReached ? "Endpoint reached" : chatGPTConfigured ? "Setup required" : "Optional"}</em></div>
             <p>{chatGPTEndpointReached
               ? "The private endpoint was reached. That confirms only that the setup URL responded, not that Jobsite Lens is installed or enabled in ChatGPT. Check Plugins, then add Jobsite Lens from the Tools menu in a new conversation."
               : chatGPTConfigured
@@ -925,7 +991,7 @@ export default function PlanLibrary() {
                 : "Create a private setup URL so ChatGPT can search your jobs, fetch drawing metadata, view prepared plan pages, and read saved takeoffs through Jobsite Lens tools."}</p>
             <div className="chatgpt-primary-actions">
               {chatGPTEndpointReached
-                ? <><a href="https://chatgpt.com/" target="_blank" rel="noreferrer">New chat — add Jobsite Lens in Tools <span>↗</span></a><a className="secondary" href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">Manage plugin</a></>
+                ? <a className="secondary" href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">Manage optional ChatGPT connection</a>
                 : <button type="button" disabled={chatGPTBusy} onClick={connectChatGPT}>{chatGPTBusy ? "Creating setup URL…" : chatGPTConfigured ? "Create replacement setup URL" : "Create setup URL"}</button>}
               {chatGPTConfigured && !chatGPTEndpointReached && <button className="secondary" type="button" disabled={chatGPTBusy} onClick={checkChatGPTConnection}>{chatGPTBusy ? "Checking…" : "Check connection"}</button>}
             </div>

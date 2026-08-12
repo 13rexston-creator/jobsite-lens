@@ -7,6 +7,7 @@ import { getChatGPTUser, type ChatGPTUser } from "./chatgpt-auth";
 export type PlanRuntime = {
   OPENAI_API_KEY?: string;
   OPENAI_PLAN_MODEL?: string;
+  OPENAI_PLAN_CHAT_MODEL?: string;
   OPENAI_TAKEOFF_MODEL?: string;
   JOBSITE_ADMIN_EMAIL?: string;
   PLANS?: R2Bucket;

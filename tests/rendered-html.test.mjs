@@ -138,8 +138,11 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
 
   // ChatGPT is the only conversational AI surface. Its owner preview issues a
   // revocable, hashed private setup URL without claiming a completed install.
-  assert.match(library, /MAIN AI EXPERIENCE · CHATGPT/);
-  assert.match(library, /<h3>Use this job in ChatGPT<\/h3>/);
+  assert.match(library, /Ask about \{selectedProject\?\.name/);
+  assert.match(library, /Stays inside Jobsite Lens/);
+  assert.match(library, /OPTIONAL EXTERNAL CONNECTION/);
+  assert.match(library, /<h3>Also use Jobsite Lens in ChatGPT<\/h3>/);
+  assert.doesNotMatch(library, /href="https:\/\/chatgpt\.com\/"/);
   assert.match(library, /Create setup URL/);
   assert.match(library, /ChatGPT Developer Mode/);
   assert.match(library, /add Jobsite Lens from the Tools menu/);

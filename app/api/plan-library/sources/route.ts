@@ -8,7 +8,7 @@ export async function GET(request: Request) {
   const user = await getAuthorizedPlanUser();
   if (!user) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const projectId = new URL(request.url).searchParams.get("projectId") ?? "";
-  if (!await getOwnedPlanProject(user.userId, projectId)) return Response.json({ error: "Job not found." }, { status: 404 });
+  if (!await getOwnedPlanProject(user, projectId)) return Response.json({ error: "Job not found." }, { status: 404 });
   const db = getDb();
   const sources = await db.select().from(documentSources).where(and(
     eq(documentSources.ownerUserId, user.userId), eq(documentSources.projectId, projectId),
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     projectId?: string; provider?: string; externalProjectId?: string; externalCompanyId?: string; externalProjectName?: string;
   };
   if (!body?.projectId || !body.provider || !body.externalProjectId) return Response.json({ error: "Job, provider, and source project are required." }, { status: 400 });
-  if (!await getOwnedPlanProject(user.userId, body.projectId)) return Response.json({ error: "Job not found." }, { status: 404 });
+  if (!await getOwnedPlanProject(user, body.projectId)) return Response.json({ error: "Job not found." }, { status: 404 });
   const adapter = getDocumentSourceAdapter(body.provider);
   const now = Date.now();
   const id = crypto.randomUUID();

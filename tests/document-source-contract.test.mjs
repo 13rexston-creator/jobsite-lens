@@ -32,6 +32,7 @@ test("connected-source routes remain owner scoped and tokens stay server-side", 
     read("app/api/plan-library/source-documents/[documentId]/import/route.ts"), read("app/procore.ts"),
   ]);
   assert.match(sources, /getOwnedPlanProject/);
+  assert.match(sources, /getOwnedPlanProject\(user, projectId\)/);
   assert.match(sync, /eq\(documentSources\.ownerUserId, user\.userId\)/);
   assert.match(importer, /eq\(sourceDocuments\.ownerUserId, user\.userId\)/);
   assert.match(importer, /eq\(documentSources\.ownerUserId, user\.userId\)/);

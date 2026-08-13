@@ -373,7 +373,11 @@ export default function PlanLibrary() {
             method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify({ projectId, priorityOnly: true, analysisIntent: completion.analysisIntent, requiredVersion: completion.analysisVersion }),
           });
-          const data = await analysisResponse.json() as TakeoffPayload;
+          const data = await analysisResponse.json().catch(() => ({
+            error: analysisResponse.status >= 500
+              ? "The drawing service paused briefly. Your completed sheets are saved; retrying will resume from the next available sheet."
+              : "The drawing analysis returned an unreadable response.",
+          })) as TakeoffPayload;
           if (!analysisResponse.ok) throw new Error(data.error || "The drawing analysis paused before it could finish.");
           if (!data.processed) break;
           processed += 1;

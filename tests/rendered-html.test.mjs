@@ -55,7 +55,7 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.match(library, /Create jobs\. Prepare plans\. Use them in ChatGPT\./);
+  assert.match(library, /Create jobs\. Prepare plans\. Ask questions\./);
   assert.match(library, /\+ Add Job/);
   assert.doesNotMatch(library, /Ask Jobsite Lens|Ask the plans|library-question/);
   assert.match(library, /multiple/);
@@ -134,19 +134,18 @@ test("includes a durable, low-cost plan library with cached visual takeoffs", as
   assert.match(takeoffRoute, /status: 402/);
   assert.match(takeoffRoute, /deferred: true/);
 
-  // ChatGPT is the only conversational AI surface. Its owner preview issues a
-  // revocable, hashed private setup URL without claiming a completed install.
+  // The in-app assistant is the only visible conversational surface. The MCP
+  // backend remains available without exposing setup or redirect UI here.
   assert.match(library, /Ask about \{selectedProject\?\.name/);
   assert.match(library, /Stays inside Jobsite Lens/);
-  assert.match(library, /OPTIONAL EXTERNAL CONNECTION/);
-  assert.match(library, /<h3>Also use Jobsite Lens in ChatGPT<\/h3>/);
+  assert.doesNotMatch(library, /OPTIONAL EXTERNAL CONNECTION/);
+  assert.doesNotMatch(library, /<h3>Also use Jobsite Lens in ChatGPT<\/h3>/);
   assert.doesNotMatch(library, /href="https:\/\/chatgpt\.com\/"/);
-  assert.match(library, /Create setup URL/);
-  assert.match(library, /ChatGPT Developer Mode/);
-  assert.match(library, /add Jobsite Lens from the Tools menu/);
-  assert.match(library, /That confirms only that the setup URL responded, not that Jobsite Lens is installed or enabled in ChatGPT/);
+  assert.doesNotMatch(library, /Create setup URL/);
+  assert.doesNotMatch(library, /ChatGPT Developer Mode/);
+  assert.doesNotMatch(library, /add Jobsite Lens from the Tools menu/);
   assert.doesNotMatch(library, /ChatGPT has (?:not )?reached/);
-  assert.match(library, /\/api\/chatgpt-connection/);
+  assert.doesNotMatch(library, /\/api\/chatgpt-connection/);
   assert.match(library, /\/api\/plan-library\/pages\/register/);
   assert.match(library, /\/api\/plan-library\/takeoff/);
   assert.match(library, /Prepared sheets and takeoff results are cached/);

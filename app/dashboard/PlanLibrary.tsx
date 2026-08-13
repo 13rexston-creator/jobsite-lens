@@ -122,14 +122,6 @@ type TakeoffPayload = {
   result?: TakeoffResult;
   takeoff?: TakeoffResult;
 } & Partial<TakeoffResult>;
-type ChatGPTConnection = {
-  status?: "not_configured" | "setup_required" | "endpoint_reached";
-  configured?: boolean;
-  endpointReached?: boolean;
-  connected: boolean;
-  createdAt?: number | null;
-  lastUsedAt?: number | null;
-};
 type PlanChatMessage = { id: string; role: "user" | "assistant"; content: string };
 type ProcoreProject = { id: string; name: string; companyId: string; companyName: string; number?: string | null };
 type DocumentSource = { id: string; provider: string; externalProjectName: string; status: string; lastSyncedAt?: number | null; syncError?: string };
@@ -262,10 +254,6 @@ export default function PlanLibrary() {
   const [takeoffBusy, setTakeoffBusy] = useState(false);
   const [takeoffBatchProcessed, setTakeoffBatchProcessed] = useState(0);
   const [takeoffBatchLimit, setTakeoffBatchLimit] = useState(MAX_TAKEOFF_PAGES_PER_RUN);
-  const [chatGPTConnection, setChatGPTConnection] = useState<ChatGPTConnection | null>(null);
-  const [chatGPTSetupUrl, setChatGPTSetupUrl] = useState("");
-  const [chatGPTBusy, setChatGPTBusy] = useState(false);
-  const [connectionMessage, setConnectionMessage] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [planChat, setPlanChat] = useState<PlanChatMessage[]>([]);
   const [planChatBusy, setPlanChatBusy] = useState(false);
@@ -311,12 +299,9 @@ export default function PlanLibrary() {
     (takeoffProgress?.failedPages ?? 0) > 0 ? `${takeoffProgress?.failedPages} prepared sheet analysis failed and remains available to retry.` : "",
   ].filter(Boolean).join(" ");
   const hasTakeoffResult = takeoffCounts.length > 0 || bathroomVisibleTotal > 0 || bathroomEstimatedTotal > 0;
-  const chatGPTConfigured = Boolean(chatGPTConnection?.configured || chatGPTConnection?.createdAt);
-  const chatGPTEndpointReached = Boolean(chatGPTConnection?.endpointReached || chatGPTConnection?.lastUsedAt);
 
   useEffect(() => {
     loadProjects();
-    loadChatGPTConnection();
   }, []);
 
   useEffect(() => {
@@ -547,92 +532,6 @@ export default function PlanLibrary() {
     setPlanChat([]);
     setPlanChatError("");
     setError("");
-  }
-
-  async function loadChatGPTConnection(): Promise<ChatGPTConnection | null> {
-    try {
-      const response = await fetch("/api/chatgpt-connection");
-      if (response.status === 404) {
-        const unavailable = { connected: false, configured: false, endpointReached: false };
-        setChatGPTConnection(unavailable);
-        return unavailable;
-      }
-      const data = await response.json() as { error?: string; connection?: ChatGPTConnection };
-      if (!response.ok) throw new Error(data.error || "Could not check the ChatGPT connection.");
-      const connection = data.connection ?? { connected: false, configured: false, endpointReached: false };
-      setChatGPTConnection(connection);
-      return connection;
-    } catch {
-      setChatGPTConnection({ connected: false, configured: false, endpointReached: false });
-      return null;
-    }
-  }
-
-  async function connectChatGPT() {
-    if (chatGPTBusy) return;
-    setChatGPTBusy(true);
-    setConnectionMessage("");
-    try {
-      const response = await fetch("/api/chatgpt-connection", { method: "POST" });
-      const data = await response.json() as { error?: string; connection?: ChatGPTConnection; mcpUrl?: string };
-      if (!response.ok) throw new Error(data.error || "Could not create the private ChatGPT connection.");
-      if (!data.mcpUrl) throw new Error("The private connection was created without a setup URL. Regenerate it and try again.");
-      setChatGPTConnection(data.connection ?? { connected: false, configured: true, endpointReached: false });
-      setChatGPTSetupUrl(data.mcpUrl);
-      try {
-        await navigator.clipboard.writeText(data.mcpUrl);
-        setConnectionMessage("Private setup URL copied. Add it on the ChatGPT Plugins page, then enable Jobsite Lens from the Tools menu in a new chat.");
-      } catch {
-        setConnectionMessage("Copy the private setup URL below, then finish setup on the ChatGPT Plugins page.");
-      }
-    } catch (cause) {
-      setConnectionMessage(cause instanceof Error ? cause.message : "Could not create the private ChatGPT connection.");
-    } finally {
-      setChatGPTBusy(false);
-    }
-  }
-
-  async function copyChatGPTSetupUrl() {
-    if (!chatGPTSetupUrl) return;
-    try {
-      await navigator.clipboard.writeText(chatGPTSetupUrl);
-      setConnectionMessage("Private connection URL copied.");
-    } catch {
-      setConnectionMessage("Select and copy the private connection URL manually.");
-    }
-  }
-
-  async function checkChatGPTConnection() {
-    if (chatGPTBusy) return;
-    setChatGPTBusy(true);
-    setConnectionMessage("");
-    const connection = await loadChatGPTConnection();
-    if (!connection) {
-      setConnectionMessage("Could not check the private ChatGPT endpoint. Try again.");
-    } else if (connection.endpointReached || connection.lastUsedAt) {
-      setConnectionMessage("The private endpoint was reached. This does not verify that Jobsite Lens is installed or enabled in ChatGPT; confirm it on the Plugins page and add it from the Tools menu in a new chat.");
-    } else {
-      setConnectionMessage("This setup URL has not recorded a request yet. Finish the Plugins setup steps below, then check again.");
-    }
-    setChatGPTBusy(false);
-  }
-
-  async function revokeChatGPTConnection() {
-    if (chatGPTBusy) return;
-    setChatGPTBusy(true);
-    setConnectionMessage("");
-    try {
-      const response = await fetch("/api/chatgpt-connection", { method: "DELETE" });
-      const data = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(data.error || "Could not revoke the ChatGPT connection.");
-      setChatGPTConnection({ connected: false, configured: false, endpointReached: false });
-      setChatGPTSetupUrl("");
-      setConnectionMessage("The private ChatGPT connection was revoked.");
-    } catch (cause) {
-      setConnectionMessage(cause instanceof Error ? cause.message : "Could not revoke the ChatGPT connection.");
-    } finally {
-      setChatGPTBusy(false);
-    }
   }
 
   function setPreparation(fileId: string, values: Partial<PagePreparation>) {
@@ -1014,7 +913,7 @@ export default function PlanLibrary() {
   return (
     <section className="library" id="drawings" aria-labelledby="library-title">
       <div className="library-heading">
-        <div><p>JOB PLAN LIBRARY</p><h2 id="library-title">Create jobs. Prepare plans. Use them in ChatGPT.</h2><span>Keep each job&apos;s plans, searchable drawing text, visual sheets, and takeoffs together for the Jobsite Lens tools in ChatGPT.</span></div>
+        <div><p>JOB PLAN LIBRARY</p><h2 id="library-title">Create jobs. Prepare plans. Ask questions.</h2><span>Keep each job&apos;s plans, searchable drawing text, visual sheets, and takeoffs together for the Jobsite Lens AI.</span></div>
         <div className="library-badge"><i /> {readyCount ? `${readyCount} searchable PDF${readyCount === 1 ? "" : "s"}` : "Ready for plans"}</div>
       </div>
 
@@ -1082,10 +981,10 @@ export default function PlanLibrary() {
           <p className="preparation-cost-note">Prepared sheets and takeoff results are cached. Repeat questions can reuse them instead of analyzing the same pages—and spending API credits—again.</p>
         </div>
 
-        <div className="chatgpt-integration">
+        <div className="plan-ai-panel">
           {error && <div className="plan-error" role="alert">{error}</div>}
           <section className="plan-ai-chat" aria-labelledby="plan-ai-title">
-            <div className="library-chat-head"><span className="lens-avatar">AI</span><div><strong id="plan-ai-title">Ask about {selectedProject?.name ?? "this job"}</strong><small>Stays inside Jobsite Lens · uses the same construction tools as the ChatGPT connection</small></div>{planChat.length > 0 && <button className="clear-plan-chat" type="button" disabled={planChatBusy} onClick={() => setPlanChat([])}>Clear</button>}</div>
+            <div className="library-chat-head"><span className="lens-avatar">AI</span><div><strong id="plan-ai-title">Ask about {selectedProject?.name ?? "this job"}</strong><small>Stays inside Jobsite Lens</small></div>{planChat.length > 0 && <button className="clear-plan-chat" type="button" disabled={planChatBusy} onClick={() => setPlanChat([])}>Clear</button>}</div>
             <div className="library-thread" aria-live="polite">
               {planChat.length === 0 && <div className="plan-chat-welcome"><strong>Ask a grounded plan question.</strong><span>The assistant searches this job, fetches relevant drawing records, opens prepared visual pages when needed, and cites its evidence.</span></div>}
               {planChat.map((message) => <article className={`library-message ${message.role}`} key={message.id}><div><strong>{message.role === "user" ? "You" : "Jobsite Lens AI"}</strong></div><p>{message.content || "Reviewing the job’s plans…"}</p></article>)}
@@ -1097,32 +996,6 @@ export default function PlanLibrary() {
             </form>
             {planChatError && <div className="plan-error" role="alert">{planChatError}</div>}
           </section>
-
-          <section className={`chatgpt-primary ${chatGPTEndpointReached ? "connected" : ""}`}>
-            <div className="chatgpt-primary-head"><span className="chatgpt-mark">✦</span><div><small>OPTIONAL EXTERNAL CONNECTION</small><h3>Also use Jobsite Lens in ChatGPT</h3></div><em>{chatGPTEndpointReached ? "Endpoint reached" : chatGPTConfigured ? "Setup required" : "Optional"}</em></div>
-            <p>{chatGPTEndpointReached
-              ? "The private endpoint was reached. That confirms only that the setup URL responded, not that Jobsite Lens is installed or enabled in ChatGPT. Check Plugins, then add Jobsite Lens from the Tools menu in a new conversation."
-              : chatGPTConfigured
-                ? "A private access URL exists, but the endpoint has not recorded a request. Create a replacement URL if needed, then finish the Plugins setup steps below."
-                : "Create a private setup URL so ChatGPT can search your jobs, fetch drawing metadata, view prepared plan pages, and read saved takeoffs through Jobsite Lens tools."}</p>
-            <div className="chatgpt-primary-actions">
-              {chatGPTEndpointReached
-                ? <a className="secondary" href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">Manage optional ChatGPT connection</a>
-                : <button type="button" disabled={chatGPTBusy} onClick={connectChatGPT}>{chatGPTBusy ? "Creating setup URL…" : chatGPTConfigured ? "Create replacement setup URL" : "Create setup URL"}</button>}
-              {chatGPTConfigured && !chatGPTEndpointReached && <button className="secondary" type="button" disabled={chatGPTBusy} onClick={checkChatGPTConnection}>{chatGPTBusy ? "Checking…" : "Check connection"}</button>}
-            </div>
-            {chatGPTConfigured && <small className="chatgpt-connection-meta">Private owner preview{chatGPTConnection?.lastUsedAt ? ` · endpoint last reached ${new Date(chatGPTConnection.lastUsedAt).toLocaleDateString()}` : " · endpoint has not recorded a request"}</small>}
-          </section>
-
-          {chatGPTSetupUrl && <section className="chatgpt-setup" aria-labelledby="chatgpt-setup-title">
-            <div><strong id="chatgpt-setup-title">Finish setup in ChatGPT Developer Mode</strong><button type="button" onClick={copyChatGPTSetupUrl}>Copy URL</button></div>
-            <input aria-label="Private ChatGPT connection URL" readOnly value={chatGPTSetupUrl} onFocus={(event) => event.currentTarget.select()} />
-            <ol><li>In ChatGPT Settings → Security and login, turn on Developer mode.</li><li>Open Plugins, select +, name it Jobsite Lens, and paste this URL under Connection.</li><li>Create it and review the discovered tools. In a new chat, add Jobsite Lens from the Tools menu before asking a plan question.</li></ol>
-            <p>Creating this URL did not connect ChatGPT. Never share it—it grants private access to your Jobsite Lens plan library.</p>
-            <a href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">Open ChatGPT Plugins to add this URL ↗</a>
-          </section>}
-          {connectionMessage && <p className="chatgpt-connection-message" aria-live="polite">{connectionMessage}</p>}
-          {chatGPTConfigured && <button className="revoke-chatgpt" type="button" disabled={chatGPTBusy} onClick={revokeChatGPTConnection}>Revoke private setup URL</button>}
         </div>
       </div>
 

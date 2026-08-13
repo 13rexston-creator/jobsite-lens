@@ -131,6 +131,9 @@ type ChatGPTConnection = {
   lastUsedAt?: number | null;
 };
 type PlanChatMessage = { id: string; role: "user" | "assistant"; content: string };
+type ProcoreProject = { id: string; name: string; companyId: string; companyName: string; number?: string | null };
+type DocumentSource = { id: string; provider: string; externalProjectName: string; status: string; lastSyncedAt?: number | null; syncError?: string };
+type SourceDocument = { id: string; sourceId: string; documentNumber: string; title: string; externalRevision: string; discipline: string; status: string; fileId?: string | null };
 
 const MAX_RENDER_DIMENSION = 2400;
 const PAGE_JPEG_QUALITY = 0.8;
@@ -267,6 +270,11 @@ export default function PlanLibrary() {
   const [planChat, setPlanChat] = useState<PlanChatMessage[]>([]);
   const [planChatBusy, setPlanChatBusy] = useState(false);
   const [planChatError, setPlanChatError] = useState("");
+  const [documentSources, setDocumentSources] = useState<DocumentSource[]>([]);
+  const [sourceDocuments, setSourceDocuments] = useState<SourceDocument[]>([]);
+  const [procoreProjects, setProcoreProjects] = useState<ProcoreProject[]>([]);
+  const [selectedProcoreProject, setSelectedProcoreProject] = useState("");
+  const [sourceBusy, setSourceBusy] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -316,7 +324,68 @@ export default function PlanLibrary() {
     selectedProjectIdRef.current = selectedProjectId;
     loadFiles(selectedProjectId);
     loadTakeoff(selectedProjectId, true);
+    loadDocumentSources(selectedProjectId);
   }, [selectedProjectId]);
+
+  async function loadDocumentSources(projectId: string) {
+    const response = await fetch(`/api/plan-library/sources?projectId=${encodeURIComponent(projectId)}`);
+    const data = await response.json().catch(() => ({})) as { error?: string; sources?: DocumentSource[]; documents?: SourceDocument[] };
+    if (!response.ok) { setError(data.error || "Could not load connected sources."); return; }
+    if (selectedProjectIdRef.current !== projectId) return;
+    setDocumentSources(data.sources ?? []);
+    setSourceDocuments(data.documents ?? []);
+  }
+
+  async function loadProcoreProjects() {
+    setSourceBusy("projects");
+    setError("");
+    try {
+      const response = await fetch("/api/procore/projects");
+      const data = await response.json() as { error?: string; projects?: ProcoreProject[] };
+      if (!response.ok) throw new Error(data.error || "Could not load Procore projects.");
+      setProcoreProjects(data.projects ?? []);
+      if (!selectedProcoreProject && data.projects?.[0]) setSelectedProcoreProject(`${data.projects[0].companyId}:${data.projects[0].id}`);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load Procore projects."); }
+    finally { setSourceBusy(""); }
+  }
+
+  async function attachProcoreSource() {
+    const [companyId, externalProjectId] = selectedProcoreProject.split(":");
+    const project = procoreProjects.find((item) => item.id === externalProjectId && item.companyId === companyId);
+    if (!project || !selectedProjectId) return;
+    setSourceBusy("attach"); setError("");
+    try {
+      const response = await fetch("/api/plan-library/sources", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+        projectId: selectedProjectId, provider: "procore", externalProjectId: project.id, externalCompanyId: project.companyId, externalProjectName: project.name,
+      }) });
+      const data = await response.json() as { error?: string; source?: DocumentSource };
+      if (!response.ok || !data.source) throw new Error(data.error || "Could not attach this Procore project.");
+      await syncDocumentSource(data.source.id);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not attach this Procore project."); }
+    finally { setSourceBusy(""); }
+  }
+
+  async function syncDocumentSource(sourceId: string) {
+    setSourceBusy(sourceId); setError("");
+    try {
+      const response = await fetch(`/api/plan-library/sources/${encodeURIComponent(sourceId)}/sync`, { method: "POST" });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error || "Could not sync this source.");
+      await loadDocumentSources(selectedProjectIdRef.current);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not sync this source."); }
+    finally { setSourceBusy(""); }
+  }
+
+  async function retrieveSourceDocument(documentId: string) {
+    setSourceBusy(documentId); setError("");
+    try {
+      const response = await fetch(`/api/plan-library/source-documents/${encodeURIComponent(documentId)}/import`, { method: "POST" });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error || "Could not retrieve this drawing.");
+      await Promise.all([loadDocumentSources(selectedProjectIdRef.current), loadFiles(selectedProjectIdRef.current, true)]);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not retrieve this drawing."); }
+    finally { setSourceBusy(""); }
+  }
 
   async function askPlanChat(event: React.FormEvent) {
     event.preventDefault();
@@ -961,6 +1030,16 @@ export default function PlanLibrary() {
             <input value={newProjectName} disabled={projectSelectionLocked} onChange={(event) => setNewProjectName(event.target.value)} placeholder="New job name" aria-label="New job name" maxLength={100} />
             <button type="submit" disabled={projectSelectionLocked || !newProjectName.trim()}>{creatingProject ? "Creating job…" : "+ Add Job"}</button>
           </form>
+
+          <section className="job-sources" aria-label="Connected plan sources">
+            <div className="job-sources-head"><div><strong>Plan sources</strong><span>Manual uploads and connected drawings use the same Jobsite Lens plan index and visual engine.</span></div><button type="button" disabled={Boolean(sourceBusy)} onClick={loadProcoreProjects}>{sourceBusy === "projects" ? "Loading…" : "+ Connect source"}</button></div>
+            {procoreProjects.length > 0 && <div className="source-picker"><label htmlFor="procore-source-project">Procore project</label><select id="procore-source-project" value={selectedProcoreProject} onChange={(event) => setSelectedProcoreProject(event.target.value)}>{procoreProjects.map((project) => <option key={`${project.companyId}:${project.id}`} value={`${project.companyId}:${project.id}`}>{project.name} · {project.companyName}</option>)}</select><button type="button" disabled={!selectedProcoreProject || Boolean(sourceBusy)} onClick={attachProcoreSource}>{sourceBusy === "attach" ? "Connecting…" : "Attach to this Job"}</button></div>}
+            {documentSources.map((source) => {
+              const documents = sourceDocuments.filter((document) => document.sourceId === source.id);
+              return <article className="connected-source" key={source.id}><div><span className="source-provider">{source.provider.toUpperCase()}</span><span><strong>{source.externalProjectName || "Connected project"}</strong><small>{documents.length} current drawing{documents.length === 1 ? "" : "s"}{source.lastSyncedAt ? ` · synced ${new Date(source.lastSyncedAt).toLocaleDateString()}` : ""}</small></span><button type="button" disabled={Boolean(sourceBusy)} onClick={() => syncDocumentSource(source.id)}>{sourceBusy === source.id ? "Syncing…" : "Sync changes"}</button></div>{source.syncError && <p className="plan-error">{source.syncError}</p>}{documents.length > 0 && <details><summary>Browse discovered drawings</summary><div className="source-document-list">{documents.slice(0, 100).map((document) => <div key={document.id}><span><strong>{document.documentNumber} · {document.title}</strong><small>{[document.discipline, document.externalRevision ? `Rev ${document.externalRevision}` : ""].filter(Boolean).join(" · ")}</small></span>{document.fileId ? <em>In plan library</em> : <button type="button" disabled={Boolean(sourceBusy)} onClick={() => retrieveSourceDocument(document.id)}>{sourceBusy === document.id ? "Retrieving…" : "Retrieve for visual use"}</button>}</div>)}</div></details>}</article>;
+            })}
+            {!documentSources.length && <small className="source-empty">No external source is attached to this Job. Uploads continue to work independently.</small>}
+          </section>
 
           <div
             className={`plan-dropzone ${dragging ? "dragging" : ""}`}

@@ -57,6 +57,13 @@
       "when": 1786578767536,
       "tag": "0007_ordinary_luke_cage",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786582943962,
+      "tag": "0008_powerful_famine",
+      "breakpoints": true
     }
   ]
 }

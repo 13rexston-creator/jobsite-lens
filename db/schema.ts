@@ -26,6 +26,24 @@ export const planProjects = sqliteTable("plan_projects", {
   index("idx_plan_projects_owner_updated").on(table.ownerUserId, table.updatedAt),
 ]);
 
+export const documentSources = sqliteTable("document_sources", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => planProjects.id, { onDelete: "cascade" }),
+  ownerUserId: text("owner_user_id").notNull(),
+  provider: text("provider").notNull(),
+  externalCompanyId: text("external_company_id").notNull().default(""),
+  externalProjectId: text("external_project_id").notNull(),
+  externalProjectName: text("external_project_name").notNull().default(""),
+  status: text("status").notNull().default("connected"),
+  lastSyncedAt: integer("last_synced_at"),
+  syncError: text("sync_error").notNull().default(""),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("idx_document_sources_project_provider_external").on(table.projectId, table.provider, table.externalProjectId),
+  index("idx_document_sources_owner_project").on(table.ownerUserId, table.projectId),
+]);
+
 export const planFiles = sqliteTable("plan_files", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull().references(() => planProjects.id, { onDelete: "cascade" }),
@@ -46,6 +64,30 @@ export const planFiles = sqliteTable("plan_files", {
   uniqueIndex("idx_plan_files_project_sha256").on(table.projectId, table.sha256),
   index("idx_plan_files_project_created").on(table.projectId, table.createdAt),
   index("idx_plan_files_owner_status").on(table.ownerUserId, table.status),
+]);
+
+export const sourceDocuments = sqliteTable("source_documents", {
+  id: text("id").primaryKey(),
+  sourceId: text("source_id").notNull().references(() => documentSources.id, { onDelete: "cascade" }),
+  projectId: text("project_id").notNull().references(() => planProjects.id, { onDelete: "cascade" }),
+  ownerUserId: text("owner_user_id").notNull(),
+  externalDocumentId: text("external_document_id").notNull(),
+  externalRevision: text("external_revision").notNull().default(""),
+  documentNumber: text("document_number").notNull().default(""),
+  title: text("title").notNull(),
+  discipline: text("discipline").notNull().default(""),
+  mimeType: text("mime_type").notNull().default("application/pdf"),
+  size: integer("size"),
+  issuedAt: text("issued_at").notNull().default(""),
+  fileId: text("file_id").references(() => planFiles.id, { onDelete: "set null" }),
+  status: text("status").notNull().default("discovered"),
+  metadataJson: text("metadata_json").notNull().default("{}"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("idx_source_documents_source_external").on(table.sourceId, table.externalDocumentId),
+  index("idx_source_documents_project_status").on(table.projectId, table.status),
+  index("idx_source_documents_owner_project").on(table.ownerUserId, table.projectId),
 ]);
 
 export const planPages = sqliteTable("plan_pages", {

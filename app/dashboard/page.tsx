@@ -1,9 +1,9 @@
 import Dashboard from "./Dashboard";
-import { requireChatGPTUser } from "../chatgpt-auth";
+import { getAuthorizedPlanUser } from "../plan-library";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  await requireChatGPTUser("/dashboard");
-  return <Dashboard />;
+  const canManage = Boolean(await getAuthorizedPlanUser());
+  return <Dashboard canManage={canManage} />;
 }

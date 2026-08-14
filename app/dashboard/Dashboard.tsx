@@ -26,7 +26,7 @@ function Mark() {
   return <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>;
 }
 
-export default function Dashboard() {
+export default function Dashboard({ canManage }: { canManage: boolean }) {
   const [filter, setFilter] = useState("All projects");
   const [searchOpen, setSearchOpen] = useState(false);
   const [toast, setToast] = useState("");
@@ -38,6 +38,8 @@ export default function Dashboard() {
   }>({ loading: true, connected: false });
 
   useEffect(() => {
+    if (!canManage) return;
+
     const result = new URLSearchParams(window.location.search).get("procore");
     if (result === "connected") notify("Procore connected successfully");
     if (result && result !== "connected") notify("Procore connection was not completed");
@@ -48,7 +50,7 @@ export default function Dashboard() {
         setProcore({ loading: false, connected: data.connected, name: data.connection?.procoreName, login: data.connection?.procoreLogin });
       })
       .catch(() => setProcore({ loading: false, connected: false }));
-  }, []);
+  }, [canManage]);
 
   function notify(message: string) {
     setToast(message);
@@ -77,8 +79,8 @@ export default function Dashboard() {
           <span>?</span>
           <div><strong>Need help?</strong><small>Visit the Help Center</small></div>
         </div>
-        <button className="user-card" onClick={() => notify("Account menu coming next") }>
-          <span className="avatar">BD</span><span><strong>Brexston Duffin</strong><small>Administrator</small></span><i>•••</i>
+        <button className="user-card" onClick={() => notify(canManage ? "Account menu coming next" : "You are viewing the public workspace preview") }>
+          <span className="avatar">{canManage ? "BD" : "JL"}</span><span><strong>{canManage ? "Brexston Duffin" : "Public visitor"}</strong><small>{canManage ? "Administrator" : "Read-only preview"}</small></span><i>•••</i>
         </button>
       </aside>
 
@@ -89,7 +91,7 @@ export default function Dashboard() {
             {searchOpen && <input className="search-input" placeholder="Search projects, RFIs…" aria-label="Search" />}
             <button className="icon-button" aria-label="Search" onClick={() => setSearchOpen(!searchOpen)}>⌕</button>
             <button className="icon-button notification" aria-label="Notifications" onClick={() => notify("You have 3 new notifications")}>♢<i>3</i></button>
-            <a className="create-button" href="#plan-library-new-job">＋ Add Job</a>
+            {canManage ? <a className="create-button" href="#plan-library-new-job">＋ Add Job</a> : <button className="create-button" type="button" onClick={() => notify("Job management is available to the workspace administrator")}>Public preview</button>}
           </div>
         </header>
 
@@ -99,9 +101,19 @@ export default function Dashboard() {
             <div className="weather"><span>☀</span><div><strong>78°</strong><small>Denver · Clear</small></div></div>
           </div>
 
-          <PlanLibrary />
+          {canManage ? <PlanLibrary /> : (
+            <section className="public-workspace-notice" aria-label="Public workspace access">
+              <span className="public-workspace-icon"><Mark /></span>
+              <div>
+                <p>PUBLIC WORKSPACE PREVIEW</p>
+                <h2>Explore Jobsite Lens without signing in.</h2>
+                <span>This read-only view shows how project health, schedules, RFIs, and field activity come together. Plan uploads, AI analysis, and connected company data remain protected for the workspace administrator.</span>
+              </div>
+              <strong>Read only</strong>
+            </section>
+          )}
 
-          <section className={`procore-connection ${procore.connected ? "connected" : ""}`} aria-label="Optional Procore source">
+          {canManage && <section className={`procore-connection ${procore.connected ? "connected" : ""}`} aria-label="Optional Procore source">
             <div className="procore-symbol"><span>PC</span></div>
             <div className="procore-copy">
               <p>OPTIONAL PLAN SOURCE</p>
@@ -122,7 +134,7 @@ export default function Dashboard() {
             ) : (
               <a className="procore-connect" href="/api/procore/connect">Connect Procore <span>→</span></a>
             )}
-          </section>
+          </section>}
 
           <section className="metric-grid" aria-label="Portfolio summary">
             <article><div className="metric-icon blue">▣</div><div><p>ACTIVE PROJECTS</p><strong>8</strong><small><em>+2</em> this quarter</small></div></article>

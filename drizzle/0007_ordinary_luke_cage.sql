@@ -1,0 +1,1 @@
+ALTER TABLE `plan_pages` ADD `analysis_version` text DEFAULT '' NOT NULL;

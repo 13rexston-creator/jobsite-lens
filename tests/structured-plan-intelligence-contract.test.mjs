@@ -1,0 +1,51 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
+
+test("fixture analysis persists reusable location and tub orientation evidence", async () => {
+  const [schema, intelligence, takeoff, migration] = await Promise.all([
+    read("db/schema.ts"), read("app/plan-intelligence.ts"), read("app/api/plan-library/takeoff/route.ts"), read("drizzle/0004_loving_black_bird.sql"),
+  ]);
+  assert.match(schema, /plan_fixture_intelligence/);
+  for (const field of ["building", "level", "unitNumber", "unitType", "room", "fixtureType", "fixtureSubtype", "orientation", "evidence", "confidence"]) assert.match(schema, new RegExp(field));
+  assert.match(migration, /CREATE TABLE `plan_fixture_intelligence`/);
+  assert.match(takeoff, /valve\/drain end/);
+  assert.match(takeoff, /replacePageFixtureIntelligence/);
+  assert.match(takeoff, /configuredVlmProvider/);
+  assert.match(takeoff, /boundingRegion/);
+  assert.match(intelligence, /LEFT_HAND/);
+  assert.match(intelligence, /RIGHT_HAND/);
+  assert.match(intelligence, /UNKNOWN/);
+  assert.match(intelligence, /offset \+= 3/);
+  assert.match(intelligence, /Keep every orientation/);
+});
+
+test("simple fixture questions bypass giant model context and MCP fallbacks are bounded", async () => {
+  const [chat, mcp] = await Promise.all([read("app/api/plan-library/chat/route.ts"), read("app/mcp/[token]/route.ts")]);
+  assert.ok(chat.indexOf("const structuredFilters = parseStructuredFixtureQuestion") < chat.indexOf("const token = createChatGPTConnectionToken"));
+  assert.match(chat, /structured_plan_intelligence/);
+  assert.match(chat, /inputTokens: 0, outputTokens: 0/);
+  assert.match(mcp, /const MAX_SEARCH_RESULTS = 8/);
+  assert.match(mcp, /const MAX_FETCH_TEXT = 12_000/);
+  assert.match(mcp, /const MAX_FETCH_PAGES = 8/);
+  assert.match(mcp, /registerTool\("query_plan_intelligence"/);
+  assert.match(mcp, /requestedPdfPage/);
+});
+
+test("an incomplete fixture cache automatically runs bounded visual analysis and retries the same question", async () => {
+  const [chat, ui, takeoff, schema] = await Promise.all([
+    read("app/api/plan-library/chat/route.ts"), read("app/dashboard/PlanLibrary.tsx"),
+    read("app/api/plan-library/takeoff/route.ts"), read("db/schema.ts"),
+  ]);
+  assert.match(chat, /analysisRequired/);
+  assert.match(chat, /I'm analyzing the relevant drawing layouts now/);
+  assert.doesNotMatch(chat, /No completed structured fixture records match/);
+  assert.match(ui, /maximumAutomaticPages = completion\.analysisIntent === "tub_handedness" \? 60 : 25/);
+  assert.match(takeoff, /one bedroom/);
+  assert.match(ui, /const finalCompletion = await sendQuestion\(finalAssistantId\)/);
+  assert.match(takeoff, /analysisIntent === "tub_handedness"/);
+  assert.match(takeoff, /requiredVersion/);
+  assert.match(schema, /analysisVersion: text\("analysis_version"\)/);
+});

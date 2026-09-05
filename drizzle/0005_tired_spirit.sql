@@ -1,0 +1,1 @@
+ALTER TABLE `plan_fixture_intelligence` ADD `record_role` text DEFAULT 'UNSPECIFIED' NOT NULL;

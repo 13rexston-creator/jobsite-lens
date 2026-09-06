@@ -64,6 +64,11 @@ const FIXTURE_QUESTION_TYPES: Array<[RegExp, FixtureType]> = [
   [/\b(?:kitchen\s+sinks?)\b/i, "kitchen_sink"],
   [/\b(?:floor\s+drains?)\b/i, "floor_drain"],
   [/\b(?:urinal|urinals)\b/i, "urinal"],
+  [/\b(?:washer\s+box(?:es)?|washing\s+machine\s+connections?)\b/i, "washer_box"],
+  [/\b(?:ice\s*box(?:es)?|ice\s*maker\s+box(?:es)?)\b/i, "ice_box"],
+  [/\b(?:hose\s+bibbs?)\b/i, "hose_bibb"],
+  [/\b(?:service\s+sinks?|mop\s+sinks?)\b/i, "service_sink"],
+  [/\b(?:drinking\s+fountains?|water\s+coolers?)\b/i, "drinking_fountain"],
 ];
 
 export function parseStructuredFixtureQuestion(question: string): IntelligenceFilters | null {
@@ -222,7 +227,11 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
       inventorySheetTitle: unit.sheetTitle,
     }));
   });
-  const rows = [...directRows, ...derivedRows];
+  type ScopedRow = typeof directRows[number] & Partial<{
+    inventoryPageId: string; inventoryFileId: string; inventoryFileName: string;
+    inventoryPageNumber: number; inventorySheetNumber: string; inventorySheetTitle: string;
+  }>;
+  const rows: ScopedRow[] = [...directRows, ...derivedRows];
 
   const counts = { LEFT_HAND: 0, RIGHT_HAND: 0, UNKNOWN: 0, total: 0 };
   for (const row of rows) {
@@ -231,9 +240,9 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
     if (row.orientation === "LEFT_HAND" || row.orientation === "RIGHT_HAND") counts[row.orientation] += quantity;
     else counts.UNKNOWN += quantity;
   }
-  const sourceRows = rows.flatMap((row) => [row, "inventoryPageId" in row ? {
-    ...row, pageId: row.inventoryPageId, fileId: row.inventoryFileId, fileName: row.inventoryFileName,
-    pageNumber: row.inventoryPageNumber, sheetNumber: row.inventorySheetNumber, sheetTitle: row.inventorySheetTitle,
+  const sourceRows = rows.flatMap((row) => [row, row.inventoryPageId ? {
+    ...row, pageId: row.inventoryPageId, fileId: row.inventoryFileId ?? row.fileId, fileName: row.inventoryFileName ?? row.fileName,
+    pageNumber: row.inventoryPageNumber ?? row.pageNumber, sheetNumber: row.inventorySheetNumber ?? row.sheetNumber, sheetTitle: row.inventorySheetTitle ?? row.sheetTitle,
   } : null]).filter((row): row is NonNullable<typeof row> => Boolean(row));
   const sources = [...new Map(sourceRows.map((row) => [row.pageId, {
     pageId: row.pageId,

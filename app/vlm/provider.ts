@@ -66,7 +66,10 @@ class AnthropicPlanVlm implements PlanVlmProvider {
     const started = Date.now();
     const response = await this.getClient().messages.create({
       model,
-      max_tokens: request.strength === "strong" ? 16_000 : 8_192,
+      // Busy unit-matrix/enlarged-plumbing sheets can need many fixtureRecords
+      // across several unit types; 8k previously truncated those responses
+      // mid-JSON and failed validation. 16k gives real headroom either way.
+      max_tokens: 16_000,
       metadata: { user_id: await planSafetyIdentifier(request.ownerUserId) },
       tool_choice: { type: "tool", name: toolName },
       tools: [{ name: toolName, description: "Record the structured analysis of this construction drawing.", input_schema: request.schema as Anthropic.Tool.InputSchema }],

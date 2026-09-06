@@ -613,7 +613,7 @@ export default function PlanLibrary() {
               let data = await response.json().catch(() => ({})) as { error?: string; uploadRequired?: boolean };
               if (!response.ok) throw new Error(data.error || `Could not save page ${pageNumber}.`);
               if (data.uploadRequired && !image) {
-                image = await renderPageImage();
+                image = await renderPageImage(MAX_RENDER_DIMENSION);
                 form.set("width", String(width));
                 form.set("height", String(height));
                 form.set("image", image, `${fileName.replace(/\.pdf$/i, "")}-page-${pageNumber}.jpg`);
@@ -829,8 +829,8 @@ export default function PlanLibrary() {
       setUploads([]);
       setTakeoff(null);
       setPagePreparation({});
-      setQuestion("");
-      setChatMessages([]);
+      setChatInput("");
+      setPlanChat([]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not create the project.");
     } finally {

@@ -184,17 +184,24 @@ export async function POST(request: Request) {
           instr(lower(${planPages.extractedText}), 'pl401') > 0 or instr(lower(${planPages.extractedText}), 'pl402') > 0
         )` : undefined,
       ));
-    const analysisRequired = Number(coverage?.count ?? 0) > 0 || !intelligence.records.length;
+    // Zero matching records is a legitimate, confident answer once coverage
+    // is complete (e.g. a building with no shower stalls) — only an actual
+    // pending-page count means the true answer isn't known yet.
+    const analysisRequired = Number(coverage?.count ?? 0) > 0;
     const requested = structuredFilters.orientation ? intelligence.counts[structuredFilters.orientation] : intelligence.counts.total;
     const sourceLines = intelligence.sources.map((source) => {
       const label = [source.sheetNumber, source.sheetTitle].filter(Boolean).join(" — ") || `${source.fileName}, page ${source.pageNumber}`;
       const url = `/api/plan-library/files/${encodeURIComponent(source.fileId)}/pages/${encodeURIComponent(source.pageId)}`;
       return `- [${label}](${url})`;
     });
-    const coverageText = !analysisRequired && intelligence.records.length
-      ? `Stored plan intelligence reports **${requested}** matching fixture${requested === 1 ? "" : "s"}. Orientation totals: **${intelligence.counts.LEFT_HAND} left-hand**, **${intelligence.counts.RIGHT_HAND} right-hand**, and **${intelligence.counts.UNKNOWN} unknown**.`
+    const orientationLine = tubIntent || structuredFilters.orientation
+      ? ` Orientation totals: **${intelligence.counts.LEFT_HAND} left-hand**, **${intelligence.counts.RIGHT_HAND} right-hand**, and **${intelligence.counts.UNKNOWN} unknown**.`
+      : "";
+    const coverageText = !analysisRequired
+      ? `Stored plan intelligence reports **${requested}** matching fixture${requested === 1 ? "" : "s"}.${orientationLine}`
       : "I'm analyzing the relevant drawing layouts now. This first takeoff may take a little longer because these drawings have not been visually analyzed yet.";
-    const answer = `${coverageText}${!analysisRequired && sourceLines.length ? `\n\nSources:\n${sourceLines.join("\n")}` : ""}\n\nTub handing is counted only when the valve/drain end establishes left or right while facing the tub apron; ambiguous tubs remain unknown.`;
+    const tubHandingNote = tubIntent ? "\n\nTub handing is counted only when the valve/drain end establishes left or right while facing the tub apron; ambiguous tubs remain unknown." : "";
+    const answer = `${coverageText}${!analysisRequired && sourceLines.length ? `\n\nSources:\n${sourceLines.join("\n")}` : ""}${tubHandingNote}`;
     return streamAnswer(answer, { projectId: project.id, toolPath: "structured_plan_intelligence", usage: { inputTokens: 0, outputTokens: 0 },
       analysisRequired,
       analysisIntent: structuredFilters.fixtureType === "bathtub" ? "tub_handedness" : "fixture_takeoff",

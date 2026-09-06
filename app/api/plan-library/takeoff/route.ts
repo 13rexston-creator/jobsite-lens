@@ -4,7 +4,7 @@ import { isSameOriginWrite } from "../../../chatgpt-connection";
 import { planAnalysisRuns, planFiles, planPages } from "../../../../db/schema";
 import { fixturePagePrioritySql } from "../../../fixture-page-priority";
 import { MAX_PAGE_IMAGE_SIZE } from "../../../plan-pages";
-import { FIXTURE_ORIENTATIONS, FIXTURE_RECORD_ROLES, replacePageFixtureIntelligence, type FixtureRecord } from "../../../plan-intelligence";
+import { FIXTURE_ORIENTATIONS, FIXTURE_RECORD_ROLES, queryFixtureIntelligence, replacePageFixtureIntelligence, type FixtureRecord } from "../../../plan-intelligence";
 import {
   getAuthorizedPlanUser,
   getOwnedPlanProject,
@@ -376,40 +376,14 @@ function aggregateAnalyses(rows: StateRow[]) {
 
   const primaryScopes = [...primaryByScope.values()].sort((left, right) =>
     compareText(left.analysis.scopeKey, right.analysis.scopeKey) || compareSources(left.source, right.source));
-  const roomTotals = new Map<RoomType, { type: RoomType; visibleCount: number; estimatedCount: number }>();
-  const fixtureTotals = new Map<FixtureType, { type: FixtureType; visibleCount: number; estimatedCount: number }>();
-
-  for (const page of primaryScopes) {
-    for (const room of page.analysis.bathroomRooms) {
-      const current = roomTotals.get(room.type) ?? { type: room.type, visibleCount: 0, estimatedCount: 0 };
-      current.visibleCount += room.visibleCount;
-      current.estimatedCount += room.estimatedCount;
-      roomTotals.set(room.type, current);
-    }
-    for (const fixture of page.analysis.fixtures) {
-      const current = fixtureTotals.get(fixture.type) ?? { type: fixture.type, visibleCount: 0, estimatedCount: 0 };
-      current.visibleCount += fixture.visibleCount;
-      current.estimatedCount += fixture.estimatedCount;
-      fixtureTotals.set(fixture.type, current);
-    }
-  }
-
-  const bathroomByType = [...roomTotals.values()].sort((left, right) => compareText(left.type, right.type));
-  const bathroomRooms = {
-    visibleCount: bathroomByType.reduce((sum, item) => sum + item.visibleCount, 0),
-    estimatedCount: bathroomByType.reduce((sum, item) => sum + item.estimatedCount, 0),
-    byType: bathroomByType,
-  };
-  const fixtures = [...fixtureTotals.values()].sort((left, right) => compareText(left.type, right.type));
 
   return {
     countPolicy: {
-      visibleAndEstimatedRemainSeparate: true,
+      visibleAndEstimatedRemainSeparate: false,
       validationSheetsExcludedFromTotals: true,
       onePrimarySheetPerScope: true,
+      derivedFromStoredFixtureRecords: true,
     },
-    bathroomRooms,
-    fixtures,
     primaryScopes: primaryScopes.map(publicSheet),
     // The aggregated counts and warnings above retain the full analysis. API
     // consumers only need bounded source metadata for visual review.
@@ -417,6 +391,28 @@ function aggregateAnalyses(rows: StateRow[]) {
     warnings: cappedUniqueSorted(warnings, 200, "Additional sheet warnings were omitted from this response; review the source sheets before relying on the takeoff."),
     notes: cappedUniqueSorted(notes, 200, "Additional sheet notes were omitted from this response."),
     constructionCaveat: CONSTRUCTION_CAVEAT,
+  };
+}
+
+// The dashboard's aggregate totals and the chat's structured answers must
+// agree, so both read the same derivation (queryFixtureIntelligence) instead
+// of each page's separately-authored bathroomRooms/fixtures summary arrays,
+// which can drift from the more carefully reasoned per-unit fixtureRecords
+// list within a single page's own analysis response.
+async function fixtureIntelligenceTotals(userId: string, projectId: string) {
+  const bathroomRooms = await queryFixtureIntelligence(userId, projectId, { fixtureType: "bathroom_group" });
+  const fixtureResults = await Promise.all(FIXTURE_TYPES.map((type) => queryFixtureIntelligence(userId, projectId, { fixtureType: type })));
+  const fixtures = FIXTURE_TYPES
+    .map((type, index) => ({ type, visibleCount: fixtureResults[index].counts.total, estimatedCount: 0 }))
+    .filter((item) => item.visibleCount > 0)
+    .sort((left, right) => left.type.localeCompare(right.type));
+  return {
+    bathroomRooms: {
+      visibleCount: bathroomRooms.counts.total,
+      estimatedCount: 0,
+      byType: bathroomRooms.counts.total > 0 ? [{ type: "private_bathroom", visibleCount: bathroomRooms.counts.total, estimatedCount: 0 }] : [],
+    },
+    fixtures,
   };
 }
 
@@ -490,7 +486,7 @@ export async function getFixtureTakeoffState(userId: string, project: { id: stri
       remainingPages: Math.max(0, candidatePages - completePages),
       percentComplete: candidatePages ? Math.round((completePages / candidatePages) * 100) : 0,
     },
-    result: aggregateAnalyses(stateRows),
+    result: { ...aggregateAnalyses(stateRows), ...(await fixtureIntelligenceTotals(userId, project.id)) },
   };
 }
 
@@ -649,12 +645,15 @@ Counting rules:
 - A sheet whose title identifies it as a wall type plan, dimension plan, reflected ceiling (RCP) plan, slab plan, framing plan, roof plan, or any other structural/MEP-coordination drawing is validation-only (isPrimaryCountView=false) even when it also shows unit outlines or unit numbers. These sheets exist to coordinate a different trade, not to establish room programming, and must never generate bathroom_group or other room-based fixtureRecords — one specific "overall plan"/"floor plan" sheet per building/level is the only primary count view for that population.
 - Avoid cross-discipline double counting. Architectural, plumbing DWV, plumbing water, electrical, and interior pages may show the same physical fixture population. Use the same concise scopeKey for the same building/area/level/unit population, independent of discipline.
 - Set isPrimaryCountView=true only for the one sheet type that is the authoritative room/unit layout for its building and level — an "overall plan"/"floor plan" showing every unit's room layout, or an explicit unit/count matrix. Do not set isPrimaryCountView=true, and do not create per-unit fixtureRecords, for any other sheet that merely happens to repeat the same unit outlines for a different purpose (dimensions, ceiling, structure, life safety, signage, accessibility).
+- You are evaluating this page in isolation and have no visibility into any other page. If this sheet's own title identifies it as an overall/composite floor plan or level plan showing every unit's room layout for a specific building and level, set isPrimaryCountView=true for it — do not set it to false out of caution about whether some other sheet elsewhere in the set might also claim that role, and do not decline just because this sheet lacks a printed matrix or multiplier table. A whole-building overall floor plan takes priority over a single unit-type template or matrix sheet as the primary count view for its building/level: only mark a unit-type template or matrix sheet as isPrimaryCountView=true when it covers a unit population that no overall/composite floor plan sheet already establishes.
 - Keep bathrooms/restrooms/shower rooms classified separately. A bi-level drinking cooler may have two fountain heads but is not automatically two separate cabinet fixtures; explain the chosen counting basis.
 - List every unit number visible on the sheet with no gaps — scan systematically (for example left to right, floor by floor) rather than stopping once a pattern seems established, and double-check the unit numbering sequence for any number you skipped.
 - On an overall/composite floor plan, do not assume every unit has exactly one bathroom. Larger unit types (commonly 2-bedroom and 3-bedroom layouts) usually have two separate bathrooms per unit. For each unit, use its unit-type label and bedroom count as your primary evidence for bathroom quantity: a studio/1-bedroom/junior 1-bedroom type is quantity 1 unless the plan clearly shows a second bathroom cluster; a 2-bedroom or larger type is quantity 2 unless the plan clearly shows only one. Make a decisive quantity call from this typical-layout evidence rather than defaulting to 1 out of caution — record your reasoning in the evidence field (for example, unit type and bedroom count implying two bathrooms) rather than declining to count. Only use quantity 1 for a multi-bedroom unit when the plan actively shows a single shared bathroom.
+- Use each unit's own room program as the primary evidence for fixture quantity, not caution: a kitchen sink count equals the number of kitchens/units on the sheet (exactly one kitchen sink per unit, unless the plan clearly shows a unit with no kitchen or with two). A bathtub-or-shower count equals the number of bathrooms established for that unit (one tub or shower per bathroom, per the bathroom-quantity rule above) — record it as a bathtub if the plan shows a tub (or tub/shower combo) and as a shower only when the plan shows a stall shower with no tub. A lavatory count is normally one per bathroom, but record two for any bathroom whose plan clearly shows a double-basin/double vanity — lavatory totals may exceed bathroom or bathtub totals for this reason alone, and that is expected, not an error. Make these decisive per-unit quantity calls from the visible room layout rather than declining to count; only deviate from the one-per-kitchen/one-per-bathroom default when the plan actively shows otherwise.
 - Create reusable fixtureRecords for every physical fixture supported by an authoritative count view. Use recordRole=INSTALLED_INSTANCE for one specific, numbered unit located on an overall/composite floor plan (this is the normal case for a building-wide overall plan — every unit on it is an installed instance, not a template). Use UNIT_TYPE_TEMPLATE only on a sheet dedicated to one single unit type in isolation (for example a sheet titled for one floor plan type, like "TWO BEDROOM (2A)", showing that type's layout once, not a specific numbered unit) — never assign UNIT_TYPE_TEMPLATE to a numbered unit on a building-wide plan. Use EXPLICIT_MULTIPLIER only for quantities printed in a unit/count matrix. Capture building, level, unit number, unit type, and room only when the page establishes them. "building" must be the specific building designation shown in the sheet's title block or drawing title (for example "A", "B", "1") — never the overall project, development, or property name; leave it empty if the sheet does not name one specific building. "level" must be the specific floor/level designation shown on the sheet (for example "1", "2", "Roof") — never a generic word like "Typical" unless that literal word is the level name printed on the sheet. Use quantity greater than 1 only for an explicit printed multiplier or repeated identical items with the same scope and evidence. boundingRegion is a normalized 0..1 rectangle around the visual evidence, or null when a reliable region cannot be localized.
 - For bathtubs, orientation is the manufactured handing determined by the valve/drain end: LEFT_HAND only when that end is demonstrably on the left when facing the tub apron from the room, and RIGHT_HAND only when demonstrably on the right. Page position, drawing rotation, or the wall touched by the tub is not enough. Use UNKNOWN whenever the valve/drain end or viewing direction is ambiguous. Never infer handing from a legend, generic symbol, schedule image, mirrored graphic, or unlabeled typical detail.
 - A bathroom_group record with UNIT_TYPE_TEMPLATE describes the bathrooms in one typical unit; with EXPLICIT_MULTIPLIER it stores the printed number of applicable units/bathrooms for that unit type; with INSTALLED_INSTANCE it stores a located physical bathroom. Validation-only schedules, legends, details, risers, and duplicate disciplines must return an empty fixtureRecords array.
+- Create UNIT_TYPE_TEMPLATE fixtureRecords for washer_box, floor_drain, and ice_box on the same isolated unit-type detail sheets that already supply kitchen_sink/bathtub/water_closet/lavatory templates (never as INSTALLED_INSTANCE on an overall building/level floor plan — that plan already lists dozens of units, and enumerating these per numbered unit there would bloat the response without adding accuracy the template-times-inventory count doesn't already give). washer_box is 1 per unit type when that unit's plan shows a laundry/washer connection; floor_drain is 1 per unit type only when the unit's own bathroom or in-unit laundry closet shows one (do not count building-wide mechanical-room floor drains this way — those are validation-only per the sheet-type rules above); ice_box (icemaker box) is 1 per unit type only when the kitchen plan shows one. Omit the record entirely, do not guess, when a unit type's plan does not show the symbol. Leave hose_bibb out of fixtureRecords entirely — exterior hose bibbs are typically a site/landscape scope, not a per-unit count, and forcing one here would be a guess.
 - Prefer current revision information visible on the page. Flag conflicts, superseded or plan-check revisions, stale references, ambiguous symbols, overlapping views, unreadable areas, and any count that needs design-team confirmation.
 - Use empty strings for unavailable sheet metadata. Use zero, not a guess, where no supported count exists. Keep warnings and notes short and specific.
 - The saved result will carry this caveat: ${CONSTRUCTION_CAVEAT}`;

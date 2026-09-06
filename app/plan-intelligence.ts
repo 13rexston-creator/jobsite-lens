@@ -12,6 +12,25 @@ export type FixtureType = typeof FIXTURE_TYPES[number];
 export type FixtureOrientation = typeof FIXTURE_ORIENTATIONS[number];
 export type FixtureRecordRole = typeof FIXTURE_RECORD_ROLES[number];
 
+// Fixtures that occur once per unit regardless of bathroom count (a 2-bath
+// unit still has exactly one kitchen). Every other fixture type derives from
+// a unit-type template scaled by the unit's bathroom count instead.
+const PER_UNIT_FIXTURE_TYPES = new Set<FixtureType>(["kitchen_sink", "washer_box", "ice_box"]);
+
+// Unit-type labels are phrased inconsistently across sheet types (an overall
+// floor plan tags a unit "1B" while its isolated detail sheet may title
+// itself "1B Type A" or "One Bedroom (1B)"). Reduce both to the same short
+// code — the parenthetical code if present, otherwise the leading
+// digit+letters token — so templates match the units they actually describe.
+function normalizedUnitTypeCode(value: string): string {
+  const trimmed = value.trim();
+  const parenthetical = /\(([^)]+)\)/.exec(trimmed)?.[1] ?? trimmed;
+  const leading = /^([0-9]+\s*[A-Za-z]{0,3})/.exec(parenthetical.trim())?.[1] ?? parenthetical;
+  // "Junior" unit types are abbreviated inconsistently ("1JR" on floor plans,
+  // "1J" on isolated detail sheets) — treat them as the same code.
+  return leading.replace(/\s+/g, "").toUpperCase().replace(/JR$/, "J");
+}
+
 export type FixtureRecord = {
   building: string;
   level: string;
@@ -160,9 +179,13 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
   const templates = targetRows.filter((row) => row.unitType && row.recordRole === "UNIT_TYPE_TEMPLATE");
   const inventory = allRows.filter((row) => row.fixtureType === "bathroom_group" && row.unitType
     && (row.recordRole === "INSTALLED_INSTANCE" || row.recordRole === "EXPLICIT_MULTIPLIER") && locationMatches(row));
+  // One winning template per unit-type + fixture-type: multiple sheets often
+  // describe the same physical unit type (a floor plan's "1A" vs an isolated
+  // detail sheet's "One Bedroom (1A)"), and picking more than one winner here
+  // would multiply-count the same unit's fixtures once per redundant sheet.
   const bestTemplate = new Map<string, typeof allRows[number]>();
   for (const row of templates) {
-    const key = [row.unitType.toLowerCase(), row.fixtureType, row.orientation, row.fixtureSubtype.toLowerCase()].join("|");
+    const key = [normalizedUnitTypeCode(row.unitType), row.fixtureType].join("|");
     const current = bestTemplate.get(key);
     if (!current || row.confidence > current.confidence) bestTemplate.set(key, row);
   }
@@ -175,15 +198,20 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
     directRows.filter((row) => row.unitNumber).map((row) => `${row.building.toLowerCase()}|${row.level.toLowerCase()}|${row.unitNumber.toLowerCase()}`),
   );
   const derivedRows = [...bestTemplate.values()].flatMap((template) => {
-    const units = inventory.filter((item) => item.unitType.toLowerCase() === template.unitType.toLowerCase()
+    const templateUnitType = normalizedUnitTypeCode(template.unitType);
+    const units = inventory.filter((item) => normalizedUnitTypeCode(item.unitType) === templateUnitType
       && !directlyCountedUnits.has(`${item.building.toLowerCase()}|${item.level.toLowerCase()}|${item.unitNumber.toLowerCase()}`));
+    // A kitchen sink occurs once per unit no matter how many bathrooms that
+    // unit has; per-bathroom fixtures (tub, toilet, lavatory) scale with the
+    // unit's bathroom count, which the bathroom_group inventory row carries.
+    const perUnit = PER_UNIT_FIXTURE_TYPES.has(template.fixtureType as FixtureType);
     return units.map((unit) => ({
       ...template,
       id: `${template.id}:${unit.id}`,
       building: unit.building,
       level: unit.level,
       unitNumber: unit.unitNumber,
-      quantity: template.quantity * unit.quantity,
+      quantity: template.quantity * (perUnit ? 1 : unit.quantity),
       evidence: `${template.evidence} Applied to unit ${unit.unitNumber} (${unit.unitType}) from ${unit.sheetNumber || unit.fileName} p.${unit.pageNumber}.`,
       confidence: Math.min(template.confidence, unit.confidence),
       inventoryPageId: unit.pageId,

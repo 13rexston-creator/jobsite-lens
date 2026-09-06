@@ -184,15 +184,37 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
   const templates = targetRows.filter((row) => row.unitType && row.recordRole === "UNIT_TYPE_TEMPLATE");
   const inventory = allRows.filter((row) => row.fixtureType === "bathroom_group" && row.unitType
     && (row.recordRole === "INSTALLED_INSTANCE" || row.recordRole === "EXPLICIT_MULTIPLIER") && locationMatches(row));
-  // One winning template per unit-type + fixture-type: multiple sheets often
-  // describe the same physical unit type (a floor plan's "1A" vs an isolated
-  // detail sheet's "One Bedroom (1A)"), and picking more than one winner here
-  // would multiply-count the same unit's fixtures once per redundant sheet.
-  const bestTemplate = new Map<string, typeof allRows[number]>();
+  // One winning template per unit-type + fixture-type + bathroom: a unit
+  // type's two bathrooms can differ (one double vanity, one single), so a
+  // sheet may report several rows for the same unit type distinguished only
+  // by "room" (BATH 1 vs BATH 2) — those must both survive. Multiple SHEETS
+  // describing the same unit type's same bathroom (a floor plan's "1A" vs an
+  // isolated detail sheet's "One Bedroom (1A)") still collapse to one winner
+  // by confidence, so a redundant sheet never multiply-counts the same room.
+  // Only a trailing bathroom NUMBER distinguishes rooms here — a single-bath
+  // unit's "Bathroom" (one sheet) and "BATH" (another sheet) both describe
+  // the same one bathroom and must dedupe together, not sum as if distinct.
+  const bestTemplateByRoom = new Map<string, { row: typeof allRows[number]; roomNumber: string }>();
   for (const row of templates) {
-    const key = [normalizedUnitTypeCode(row.unitType), row.fixtureType].join("|");
-    const current = bestTemplate.get(key);
-    if (!current || row.confidence > current.confidence) bestTemplate.set(key, row);
+    const roomNumber = /([0-9]+)\s*$/.exec(row.room.trim())?.[1] ?? "";
+    const key = [normalizedUnitTypeCode(row.unitType), row.fixtureType, roomNumber].join("|");
+    const current = bestTemplateByRoom.get(key);
+    if (!current || row.confidence > current.row.confidence) bestTemplateByRoom.set(key, { row, roomNumber });
+  }
+  const templateGroups = new Map<string, { row: typeof allRows[number]; roomNumber: string }[]>();
+  for (const entry of bestTemplateByRoom.values()) {
+    const key = [normalizedUnitTypeCode(entry.row.unitType), entry.row.fixtureType].join("|");
+    const group = templateGroups.get(key) ?? [];
+    group.push(entry);
+    templateGroups.set(key, group);
+  }
+  // A generic, unnumbered "Bathroom" row from one sheet and specific "BATH 1"
+  // / "BATH 2" rows from another both describe the same physical bathrooms —
+  // once any numbered room exists for a unit type, drop the generic row
+  // rather than counting it as a third bathroom.
+  for (const [key, group] of templateGroups) {
+    const numbered = group.filter((entry) => entry.roomNumber);
+    if (numbered.length) templateGroups.set(key, numbered);
   }
   // A unit that already has its own direct INSTALLED_INSTANCE bathroom count
   // (the normal case once a sheet tags units with both a number and a type)
@@ -202,23 +224,29 @@ export async function queryFixtureIntelligence(ownerUserId: string, projectId: s
   const directlyCountedUnits = new Set(
     directRows.filter((row) => row.unitNumber).map((row) => `${row.building.toLowerCase()}|${row.level.toLowerCase()}|${row.unitNumber.toLowerCase()}`),
   );
-  const derivedRows = [...bestTemplate.values()].flatMap((template) => {
+  const derivedRows = [...templateGroups.values()].flatMap((entries) => {
+    const rows = entries.map((entry) => entry.row);
+    const template = rows[0];
     const templateUnitType = normalizedUnitTypeCode(template.unitType);
     const units = inventory.filter((item) => normalizedUnitTypeCode(item.unitType) === templateUnitType
       && !directlyCountedUnits.has(`${item.building.toLowerCase()}|${item.level.toLowerCase()}|${item.unitNumber.toLowerCase()}`));
     // A kitchen sink occurs once per unit no matter how many bathrooms that
-    // unit has; per-bathroom fixtures (tub, toilet, lavatory) scale with the
-    // unit's bathroom count, which the bathroom_group inventory row carries.
+    // unit has. A fixture with more than one surviving room-specific template
+    // (BATH 1 and BATH 2 reported separately, possibly with different
+    // quantities) is summed directly — each row already represents one real
+    // bathroom's own count. Only a single generic template with no per-room
+    // breakdown falls back to scaling by the unit's total bathroom count.
     const perUnit = PER_UNIT_FIXTURE_TYPES.has(template.fixtureType as FixtureType);
+    const perRoomTotal = rows.reduce((sum, row) => sum + row.quantity, 0);
     return units.map((unit) => ({
       ...template,
       id: `${template.id}:${unit.id}`,
       building: unit.building,
       level: unit.level,
       unitNumber: unit.unitNumber,
-      quantity: template.quantity * (perUnit ? 1 : unit.quantity),
-      evidence: `${template.evidence} Applied to unit ${unit.unitNumber} (${unit.unitType}) from ${unit.sheetNumber || unit.fileName} p.${unit.pageNumber}.`,
-      confidence: Math.min(template.confidence, unit.confidence),
+      quantity: perUnit ? perRoomTotal : rows.length > 1 ? perRoomTotal : template.quantity * unit.quantity,
+      evidence: `${rows.map((row) => row.evidence).join(" ")} Applied to unit ${unit.unitNumber} (${unit.unitType}) from ${unit.sheetNumber || unit.fileName} p.${unit.pageNumber}.`,
+      confidence: Math.min(...rows.map((row) => row.confidence), unit.confidence),
       inventoryPageId: unit.pageId,
       inventoryFileId: unit.fileId,
       inventoryFileName: unit.fileName,

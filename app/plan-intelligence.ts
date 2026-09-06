@@ -79,7 +79,7 @@ export function parseStructuredFixtureQuestion(question: string): IntelligenceFi
     ? "LEFT_HAND" : /\b(?:right[- ]hand|right[- ]handed|rh)\b/i.test(question) ? "RIGHT_HAND" : undefined;
   const building = /\bbuilding\s+([a-z0-9-]+)/i.exec(question)?.[1];
   const level = /\b(?:level|floor)\s+([a-z0-9-]+)/i.exec(question)?.[1];
-  const unitNumber = /\bunit\s+([a-z0-9.-]+)/i.exec(question)?.[1];
+  const unitNumber = /\bunit\s+(?!type\b)([a-z0-9.-]+)/i.exec(question)?.[1];
   return { fixtureType, orientation, building, level, unitNumber };
 }
 
